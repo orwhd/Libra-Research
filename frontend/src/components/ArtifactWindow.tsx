@@ -63,7 +63,15 @@ export const ArtifactWindow: React.FC<ArtifactWindowProps> = ({
             onCommentChanged={onCommentChanged}
           />
         )}
-        {activeTab === 'data_map' && <DataMapView artifactVersionId={version.artifact_version_id} />}
+        {activeTab === 'data_map' && (
+          <DataMapView
+            artifactVersionId={version.artifact_version_id}
+            comments={comments}
+            pinMode={commentPinMode}
+            onExitPinMode={() => setCommentPinMode(false)}
+            onCommentChanged={onCommentChanged}
+          />
+        )}
         {activeTab === 'source' && (
           <SourceCodeView
             artifactVersionId={version.artifact_version_id}
@@ -75,14 +83,14 @@ export const ArtifactWindow: React.FC<ArtifactWindowProps> = ({
       <ArtifactDock
         artifactVersionId={version.artifact_version_id}
         activeTab={activeTab}
-        commentPinMode={activeTab === 'preview' && commentPinMode}
+        commentPinMode={(activeTab === 'preview' || activeTab === 'data_map') && commentPinMode}
         pendingCommentsCount={pendingCount}
         onSelectTab={(tab) => {
           setActiveTab(tab);
           setCommentPinMode(false);
         }}
         onToggleCommentMode={() => {
-          if (activeTab !== 'preview') {
+          if (activeTab !== 'preview' && activeTab !== 'data_map') {
             setActiveTab('preview');
             setCommentPinMode(true);
           } else {

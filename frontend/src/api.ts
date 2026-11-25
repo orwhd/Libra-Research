@@ -2,10 +2,14 @@ import type {
   AnchorPoint,
   ArtifactVersion,
   LineageGraph,
+  LLMSettings,
   PreviewViewState,
   RunEvent,
   TaskRun,
+  ThinkingEffort,
+  UpdateLLMSettingsPayload,
   VisualComment,
+  WeeklyTrendingChartsResponse,
   Workspace,
   WorkspaceDetailResponse,
 } from './types';
@@ -190,4 +194,58 @@ export function deleteArtifactVersion(
   return jsonFetch(`/api/versions/${encodeURIComponent(versionId)}`, {
     method: 'DELETE',
   });
+}
+
+export function getLLMSettings(): Promise<LLMSettings> {
+  return jsonFetch<LLMSettings>('/api/settings/llm');
+}
+
+export function updateLLMSettings(payload: UpdateLLMSettingsPayload): Promise<LLMSettings> {
+  return jsonFetch<LLMSettings>('/api/settings/llm', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resetLLMSettings(): Promise<LLMSettings> {
+  return jsonFetch<LLMSettings>('/api/settings/llm', {
+    method: 'DELETE',
+  });
+}
+
+export function testLLMSettings(
+  payload: UpdateLLMSettingsPayload
+): Promise<{ ok: boolean; model: string }> {
+  return jsonFetch('/api/settings/llm/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchLLMModels(payload: {
+  api_key: string;
+  base_url: string;
+}): Promise<{ models: string[]; count: number }> {
+  return jsonFetch('/api/settings/llm/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateLLMSelection(payload: {
+  model?: string;
+  thinking_effort?: ThinkingEffort;
+}): Promise<LLMSettings> {
+  return jsonFetch<LLMSettings>('/api/settings/llm/selection', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getWeeklyTrendingCharts(): Promise<WeeklyTrendingChartsResponse> {
+  return jsonFetch<WeeklyTrendingChartsResponse>('/api/trending-charts');
 }

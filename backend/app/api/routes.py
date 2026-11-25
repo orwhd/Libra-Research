@@ -6,6 +6,7 @@ import csv
 import io
 import ipaddress
 import json
+import re
 import socket
 import urllib.parse
 import uuid
@@ -16,8 +17,10 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
+from openai import AsyncOpenAI
 from sse_starlette.sse import EventSourceResponse
 
+from ..agents.capability_catalog import IFRAME_VIEW_STATE_BRIDGE
 from ..agents.orchestrator import (
     EVENT_BUS,
     ResearchOrchestrator,
@@ -25,7 +28,7 @@ from ..agents.orchestrator import (
     _emit_event,
     _load_pending_comments,
 )
-from ..config import LLM_MODEL, RUNTIME_DIR
+from ..config import RUNTIME_DIR
 from ..db import dumps, get_conn, loads, utc_now_iso
 from ..models import (
     AnchorPoint,
@@ -38,15 +41,28 @@ from ..models import (
     CreateUploadRequest,
     CreateUrlUploadRequest,
     CreateWorkspaceRequest,
+    FetchModelsRequest,
+    FetchModelsResponse,
     FollowUpSuggestion,
+    LLMSettingsResponse,
     PreviewViewState,
     RunEvent,
     TaskRun,
     UpdateCanvasPositionRequest,
+    UpdateLLMSelectionRequest,
+    UpdateLLMSettingsRequest,
     UploadSummaryResponse,
     VisualComment,
+    WeeklyTrendingChartsResponse,
     Workspace,
     WorkspaceDetailResponse,
+)
+from ..services.api_settings import (
+    clear_user_llm_settings,
+    get_llm_settings_public,
+    load_raw_user_llm_settings,
+    save_user_llm_settings,
+    update_user_llm_selection,
 )
 from ..services.artifact_manager import (
     build_provenance_zip_bytes,
@@ -56,8 +72,13 @@ from ..services.artifact_manager import (
     make_standalone_html,
     update_artifact_canvas_position,
 )
-from ..services.browser_validator import capture_comment_screenshot
+from ..services.browser_validator import (
+    await_comment_screenshots,
+    capture_comment_screenshot,
+    schedule_comment_screenshot,
+)
 from ..services.lineage_manager import load_lineage
+from ..services.weekly_trending_charts import get_weekly_trending_charts
 
 router = APIRouter(prefix="/api")
 
@@ -130,7 +151,103 @@ def _row_to_comment(r: Any) -> VisualComment:
 
 @router.get("/health")
 async def health_check() -> dict[str, Any]:
-    return {"ok": True, "model": LLM_MODEL}
+    pub = get_llm_settings_public()
+    return {"ok": True, "model": pub["model"], "configured": pub["configured"]}
+
+
+@router.get("/settings/llm", response_model=LLMSettingsResponse)
+async def get_llm_settings() -> LLMSettingsResponse:
+    return LLMSettingsResponse.model_validate(get_llm_settings_public())
+
+
+@router.put("/settings/llm", response_model=LLMSettingsResponse)
+async def put_llm_settings(req: UpdateLLMSettingsRequest) -> LLMSettingsResponse:
+    try:
+        updated = save_user_llm_settings(
+            provider=req.provider,
+            api_key=req.api_key,
+            base_url=req.base_url,
+            model=req.model,
+            thinking_effort=req.thinking_effort,
+            available_models=req.available_models,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LLMSettingsResponse.model_validate(updated)
+
+
+@router.patch("/settings/llm/selection", response_model=LLMSettingsResponse)
+async def patch_llm_selection(req: UpdateLLMSelectionRequest) -> LLMSettingsResponse:
+    updated = update_user_llm_selection(
+        model=req.model,
+        thinking_effort=req.thinking_effort,
+    )
+    return LLMSettingsResponse.model_validate(updated)
+
+
+@router.post("/settings/llm/models", response_model=FetchModelsResponse)
+async def fetch_llm_models(req: FetchModelsRequest) -> FetchModelsResponse:
+    existing = load_raw_user_llm_settings()
+    api_key = req.api_key.strip() or str(existing.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Please enter an API Key to fetch models.")
+    base_url = req.base_url.strip().rstrip("/")
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        raise HTTPException(
+            status_code=400,
+            detail="API Base URL must start with http:// or https://.",
+        )
+
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=15.0)
+        page = await client.models.list()
+        model_ids = sorted(
+            {str(item.id).strip() for item in page.data if getattr(item, "id", None)}
+        )
+        return FetchModelsResponse(models=model_ids, count=len(model_ids))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Failed to fetch models: {exc}") from exc
+
+
+@router.delete("/settings/llm", response_model=LLMSettingsResponse)
+async def delete_llm_settings() -> LLMSettingsResponse:
+    return LLMSettingsResponse.model_validate(clear_user_llm_settings())
+
+
+@router.post("/settings/llm/test")
+async def test_llm_settings(req: UpdateLLMSettingsRequest) -> dict[str, Any]:
+    existing = load_raw_user_llm_settings()
+    api_key = req.api_key.strip() or str(existing.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Please enter an API Key to test.")
+    base_url = req.base_url.strip().rstrip("/")
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        raise HTTPException(
+            status_code=400,
+            detail="API Base URL must start with http:// or https://.",
+        )
+    model_name = req.model.strip()
+    if not model_name:
+        raise HTTPException(status_code=400, detail="Model name cannot be empty.")
+
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=15.0)
+        await client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": "Reply with OK"}],
+            max_tokens=6,
+        )
+        return {"ok": True, "model": model_name}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Connection test failed: {exc}") from exc
+
+
+@router.get("/trending-charts", response_model=WeeklyTrendingChartsResponse)
+async def get_trending_charts(
+    force: bool = Query(default=False),
+) -> WeeklyTrendingChartsResponse:
+    data = await get_weekly_trending_charts(force_refresh=force)
+    return WeeklyTrendingChartsResponse.model_validate(data)
 
 
 @router.post("/uploads", response_model=UploadSummaryResponse)
@@ -592,9 +709,19 @@ async def submit_task(workspace_id: str, req: CreateTaskRequest) -> TaskRun:
         if not ws_row:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
-    captured_pending_map: dict[str, list[dict[str, Any]]] = (
+    all_pending_map: dict[str, list[dict[str, Any]]] = (
         _load_pending_comments(workspace_id) if req.apply_pending_comments else {}
     )
+    explicit_targets = set(req.selected_artifact_version_ids or [])
+    if req.target_artifact_version_id:
+        explicit_targets.add(req.target_artifact_version_id)
+
+    if explicit_targets and any(avid in all_pending_map for avid in explicit_targets):
+        captured_pending_map = {
+            avid: clist for avid, clist in all_pending_map.items() if avid in explicit_targets
+        }
+    else:
+        captured_pending_map = all_pending_map
     attached_comments_meta: list[dict[str, Any]] = []
     consumed_cids: list[str] = []
     if captured_pending_map:
@@ -785,6 +912,20 @@ async def get_version_html(
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="HTML artifact file missing")
     content = html_path.read_text(encoding="utf-8")
+    if 'data-rc-bridge="2"' not in content:
+        content = re.sub(
+            r'<script\s+data-rc-bridge="1">.*?</script>',
+            "",
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if "</body>" in content:
+            content = content.replace("</body>", f"{IFRAME_VIEW_STATE_BRIDGE}\n</body>", 1)
+        elif "</BODY>" in content:
+            content = content.replace("</BODY>", f"{IFRAME_VIEW_STATE_BRIDGE}\n</BODY>", 1)
+        else:
+            content = f"{content}\n{IFRAME_VIEW_STATE_BRIDGE}"
+
     if debug_back:
         if "</body>" in content:
             content = content.replace("</body>", f"{_DEBUG_BACK_SNIPPET}</body>", 1)
@@ -834,15 +975,20 @@ async def get_version_source(version_id: str) -> dict[str, Any]:
     html_path = RUNTIME_DIR / av.html_ref
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="HTML source file missing")
+    html_text_src = html_path.read_text(encoding="utf-8")
+    deps = [
+        f"/vendor/{name} (inlined automatically in standalone Download)"
+        for name in sorted(set(re.findall(r"/vendor/([A-Za-z0-9._-]+\.js)", html_text_src)))
+    ]
+    if not deps:
+        deps = ["Self-contained HTML5 / SVG / Canvas (zero external runtime dependencies)"]
     return {
         "artifact_version_id": av.artifact_version_id,
         "title": av.title,
         "version_number": av.version_number,
         "filename": f"{av.artifact_version_id}_v{av.version_number}.html",
-        "html": html_path.read_text(encoding="utf-8"),
-        "external_dependencies": [
-            "D3.js v7.9.0 served from /vendor/d3.v7.min.js (inlined automatically in standalone Download)"
-        ],
+        "html": html_text_src,
+        "external_dependencies": deps,
     }
 
 
@@ -913,15 +1059,56 @@ async def create_version_comment(version_id: str, req: CreateCommentRequest) -> 
     html_path = RUNTIME_DIR / av.html_ref
     html_text = html_path.read_text(encoding="utf-8") if html_path.exists() else ""
 
-    await capture_comment_screenshot(
-        html_text=html_text,
-        screenshot_path=screenshot_abs,
-        x_norm=req.anchor.x_norm,
-        y_norm=req.anchor.y_norm,
-        viewport_width=req.preview_view_state.viewport_width,
-        viewport_height=req.preview_view_state.viewport_height,
-        filter_state=req.preview_view_state.filter_state,
-    )
+    fs = req.preview_view_state.filter_state or {}
+    if isinstance(fs, dict) and fs.get("surface") == "data_map":
+        import html as html_lib
+
+        lineage_graph = load_lineage(version_id)
+        sf = lineage_graph.semantic_flow if lineage_graph else None
+        node_lbl = html_lib.escape(str(fs.get("node_label") or req.optional_element_hint or "Data Map Flow"))
+        node_kind = html_lib.escape(str(fs.get("node_kind") or "semantic_flow"))
+        comment_esc = html_lib.escape(req.text.strip())
+        if sf:
+            stats_line = (
+                f"Input: {sf.total_input_count:,} {html_lib.escape(sf.record_unit)} · "
+                f"Retained: {sf.total_retained_count:,} · Excluded: {sf.total_excluded_count:,}"
+            )
+            cats_html = "".join(
+                f'<div style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;">'
+                f'<strong>{html_lib.escape(c.label)}</strong>'
+                f'<div style="font-size:12px;color:#475569;">Raw {c.raw_count} · Retained {c.retained_count} · Excluded {c.excluded_count}</div>'
+                f'</div>'
+                for c in sf.categories[:6]
+            )
+            excl_html = "".join(
+                f'<div style="padding:8px 12px;border:1px solid #fdba74;border-radius:10px;background:#fff7ed;">'
+                f'<strong>{html_lib.escape(o.label)}</strong>'
+                f'<div style="font-size:12px;color:#9a3412;">{o.count} excluded · {html_lib.escape(o.filter_rule)}</div>'
+                f'</div>'
+                for o in sf.outcomes
+                if o.outcome_kind == "excluded"
+            )
+        else:
+            stats_line = f"{av.title} · Legacy Data Lineage"
+            cats_html = ""
+            excl_html = ""
+        html_text = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Data Map Comment Context</title></head>
+<body style="margin:0;padding:28px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f8fafc;color:#0f172a;">
+  <div style="max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#2563eb;">Data Map Context Snapshot · {node_kind}</div>
+        <h2 style="margin:4px 0;">{html_lib.escape(av.title)} (v{av.version_number}) — Target: {node_lbl}</h2>
+        <div style="font-size:13px;color:#475569;">{stats_line}</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">{cats_html}{excl_html}</div>
+    <div style="padding:12px 14px;border-radius:10px;border:1px solid #bfdbfe;background:#eff6ff;font-size:13px;">
+      <strong>Comment:</strong> {comment_esc}
+    </div>
+  </div>
+</body></html>"""
 
     vc = VisualComment(
         comment_id=comment_id,
@@ -958,6 +1145,34 @@ async def create_version_comment(version_id: str, req: CreateCommentRequest) -> 
                 vc.created_at,
             ),
         )
+
+    # Seed immediate placeholder PNG from existing artifact thumbnail (<1ms) so file path exists immediately,
+    # then overwrite asynchronously with the scroll-locked, tooltip-hovered, red-reticle Chromium capture.
+    screenshot_abs.parent.mkdir(parents=True, exist_ok=True)
+    thumb_abs = RUNTIME_DIR / av.thumbnail_ref
+    if thumb_abs.exists():
+        screenshot_abs.write_bytes(thumb_abs.read_bytes())
+    else:
+        screenshot_abs.write_bytes(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            )
+        )
+
+    schedule_comment_screenshot(
+        comment_id,
+        {
+            "html_text": html_text,
+            "screenshot_path": screenshot_abs,
+            "x_norm": req.anchor.x_norm,
+            "y_norm": req.anchor.y_norm,
+            "viewport_width": req.preview_view_state.viewport_width,
+            "viewport_height": req.preview_view_state.viewport_height,
+            "scroll_x": req.preview_view_state.scroll_x,
+            "scroll_y": req.preview_view_state.scroll_y,
+            "filter_state": req.preview_view_state.filter_state,
+        },
+    )
     return vc
 
 
@@ -980,6 +1195,7 @@ async def delete_comment(comment_id: str) -> dict[str, Any]:
 
 @router.get("/comments/{comment_id}/screenshot")
 async def get_comment_screenshot(comment_id: str) -> Response:
+    await await_comment_screenshots([comment_id])
     with get_conn() as conn:
         row = conn.execute(
             "SELECT screenshot_ref FROM visual_comments WHERE comment_id = ?", (comment_id,)

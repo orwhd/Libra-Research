@@ -9,7 +9,7 @@ from typing import Any
 from ..config import MAX_RETRIES, RUNTIME_DIR
 from ..db import dumps, get_conn, loads, utc_now_iso
 from ..services.sandbox_runner import run_python_sandbox
-from .capability_catalog import DATASET_SCHEMA_GUIDE, PYTHON_SANDBOX_CAPABILITIES
+from .capability_catalog import DATASET_SCHEMA_GUIDE, discover_python_sandbox_capabilities
 from .llm_client import LLMClient, extract_code_block
 
 
@@ -38,7 +38,7 @@ class AnalysisAgent:
         Generates and executes real Python analytical computation (Pandas / NetworkX / SciPy)
         against an immutable DatasetSnapshot inside `python -I` sandbox.
         """
-        if reuse_analysis_run_id and not revision_notes:
+        if reuse_analysis_run_id:
             existing = self.get_analysis_run(reuse_analysis_run_id)
             if existing and existing.get("status") == "completed":
                 return existing
@@ -47,7 +47,8 @@ class AnalysisAgent:
         records_path = RUNTIME_DIR / snapshot["records_ref"]
         snapshot_payload = json.loads(records_path.read_text(encoding="utf-8"))
         sample_records = snapshot_payload.get("records", [])[:3]
-        is_uploaded = snapshot.get("retrieval_mode") == "user_uploaded_files"
+        is_uploaded = snapshot.get("retrieval_mode") in ("user_uploaded_files", "user_attached_url")
+        sandbox_capabilities = discover_python_sandbox_capabilities()
         schema_guide_section = (
             f"Data Source: User-uploaded dataset (`{snapshot.get('source_name')}`). Rely strictly on the Snapshot Schema & Sample records above."
             if is_uploaded
@@ -90,31 +91,40 @@ Sample records from `data["records"]`:
 
 {schema_guide_section}
 
-{PYTHON_SANDBOX_CAPABILITIES}
+{sandbox_capabilities}
 
 Output JSON contract written to `sys.argv[2]`:
 {{
-  "analysis_algorithm": "<concise method name, e.g. 'Yearly Publication & Citation Aggregation', 'Co-authorship Network + Louvain Communities', 'Taxonomic Hierarchical Edge Bundling Graph', 'Topic-by-Year Contingency Matrix'>",
+  "analysis_algorithm": "<concise name of the statistical, clustering, graph, temporal, or matrix algorithm you selected>",
   "params": {{ "<key>": <value>, ... }},
   "summary": {{
-    "headline": "<1-sentence empirical finding grounded in computed numbers>",
+    "headline": "<1-sentence concise empirical finding grounded in computed numbers, written in the SAME human language as the Analytical Goal (no internal IDs or variable names)>",
     "key_metrics": {{ "<metric>": <number_or_string>, ... }}
   }},
-  "data": <structured JSON tailored to the analytical goal (e.g. series rows; or nodes + links with community/degree/citations; or nested hierarchy tree + bundle_links; or matrix cells + row/col totals)>
+  "unit_transform": {{
+    "input_count": {snapshot['retained_record_count']},
+    "input_unit": "records | works | rows",
+    "output_count": <int count of primary output items/nodes/buckets>,
+    "output_unit": "<e.g. entities & links | time buckets | matrix cells | hierarchy leaves>",
+    "unit_changed": <true if unit aggregated or transformed from input records, else false>,
+    "conversion_explanation": "<concise explanation of how input records were aggregated, projected, or filtered into output entities>"
+  }},
+  "data": <structured JSON tailored to the analytical & visual requirements>
 }}
 
-Strict analytical & anti-hallucination rules:
-- Compute EVERY value, node, edge, hierarchy path, and metric strictly from `data["records"]`. Never invent synthetic nodes or numbers!
-- If computing a co-authorship or collaboration network: build real co-author edges from `authorships`, keep a readable high-signal subgraph (e.g. top 40-65 authors by degree/papers/citations who actually participate in co-authorship edges so there are no huge unreadable clouds, include `degree`, `papers`, `citations`, `institution`, `community` per node, and `weight`, `shared_papers` per edge).
-- If computing a hierarchical bundled network: build a genuine 3+ level tree (`name`, `id`, `children`) from OpenAlex `primary_topic` / `topics` taxonomy (`domain -> field -> subfield -> topic` or `subfield -> topic` depending on diversity; check actual distinct values so there are >= 15 leaf nodes across >= 3 groups!) and derive real `bundle_links` (`source`, `target`, `weight`, `shared_papers`) from topics or subfields co-occurring on the same works (or cross-topic author overlap). Ensure EVERY `source` and `target` in `bundle_links` matches a real leaf node `id` in `hierarchy`!
-- Convert all numpy/pandas int64/float64 values to native Python `int`/`float`. Avoid `NaN`/`Infinity`.
+Generalizable Analytical Design Principles (NO hardcoded templates):
+- Compute EVERY value, entity, relationship, distribution, and metric strictly from `data["records"]`. Never invent synthetic records or numbers.
+- Autonomously select the best-suited algorithms from the discovered sandbox packages (`pandas`, `numpy`, `scipy`, `networkx`, `scikit-learn`, etc.) based on the data schema and analytical goal.
+- Structure `data` to support rich visual legibility and interactive exploration (e.g., bound extreme cardinalities to high-signal subsets when projecting graphs/hierarchies/matrices so views remain readable, include rich per-item attributes for tooltips/filtering, and guarantee referential integrity so every link/edge endpoint exists in the emitted node/leaf set).
+- Convert all numpy/pandas scalar types to native Python `int`/`float` and replace or guard against `NaN`/`Infinity`.
 - Output ONLY valid Python code inside a single ```python ... ``` block.
 {error_feedback}
 """
             raw_resp = await self.llm.complete_text(
                 system_prompt="You are a quantitative research scientist & Python data engineer. Output only runnable Python code.",
                 user_content=prompt,
-                max_tokens=16384,
+                max_tokens=12288,
+                effort_override="low" if attempt > 0 else None,
             )
             script_code = extract_code_block(raw_resp, ("python", "py"))
             sandbox_res = await asyncio.to_thread(

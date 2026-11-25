@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -16,6 +17,7 @@ _REQUIRED_STAGES = (
     "generating_html",
     "validating",
     "retrying",
+    "summarizing",
     "completed",
 )
 
@@ -39,22 +41,24 @@ class InteractionAgent:
         topic_hint = titles[0] if titles else user_prompt.strip()[:28]
         if _contains_cjk(user_prompt):
             return {
-                "planning": f"规划「{topic_hint[:12]}」分析思路",
-                "collecting": "检索与整理核心数据集",
-                "analyzing": f"计算「{topic_hint[:12]}」统计特征",
-                "generating_html": "构建交互式 D3 可视化视图",
-                "validating": "无头浏览器校验图表渲染",
-                "retrying": "修复交互细节并复检",
+                "planning": f"规划「{topic_hint[:12]}」研究方案",
+                "collecting": "多智能体并发检索与清洗数据",
+                "analyzing": f"计算「{topic_hint[:12]}」统计与结构特征",
+                "generating_html": "构建交互式可视化视图",
+                "validating": "无头浏览器校验图表与交互",
+                "retrying": "快速修复图表细节并复检",
+                "summarizing": "整理分析结论与研究报告",
                 "completed": "分析视图已就绪",
             }
         short_hint = re.sub(r"\s+", " ", topic_hint)[:26].strip(" -:,.")
         return {
             "planning": f"Scoping {short_hint or 'research goal'}",
-            "collecting": f"Mining {short_hint or 'dataset'} records",
-            "analyzing": f"Computing {short_hint or 'statistical'} metrics",
-            "generating_html": "Rendering interactive D3 views",
+            "collecting": f"Parallel mining {short_hint or 'dataset'} records",
+            "analyzing": f"Computing {short_hint or 'analytical'} metrics",
+            "generating_html": "Building interactive chart views",
             "validating": "Verifying DOM & visual quality",
-            "retrying": "Refining chart geometry & retries",
+            "retrying": "Refining chart layout & retries",
+            "summarizing": "Synthesizing research findings",
             "completed": "Canvas artifacts ready",
         }
 
@@ -79,14 +83,13 @@ class InteractionAgent:
         )
         system_prompt = (
             "You are InteractionAgent in a Multi-Agent Research Canvas.\n"
-            "Your job is to craft bespoke, domain-specific, non-hardcoded progress stage labels "
-            "shown in a streaming step trail (like `step1... -> step2... -> step3...`).\n"
+            "Craft domain-specific, non-hardcoded progress stage labels shown in the rolling status bar.\n"
             f"{lang_rule}\n"
             "Return strictly a JSON object with a single key `labels` mapping EVERY one of these exact keys: "
-            "`planning`, `collecting`, `analyzing`, `generating_html`, `validating`, `retrying`, `completed`.\n"
+            "`planning`, `collecting`, `analyzing`, `generating_html`, `validating`, `retrying`, `summarizing`, `completed`.\n"
             "Constraints:\n"
-            "- Each label must be 2 to 5 words (or 4 to 10 Chinese characters), present progressive / action-oriented, "
-            "referencing the actual topic or chart domain from the prompt.\n"
+            "- Each label must be 2 to 5 words (or 4 to 12 Chinese characters), present progressive / action-oriented, "
+            "referencing the actual topic or analytical domain from the prompt.\n"
             "- Do NOT include trailing `...` or punctuation (the UI adds animated dots).\n"
             "- Never return generic single words like 'Planning', 'Data', 'Analysis', 'Vis', or 'Ready'."
         )
@@ -95,7 +98,15 @@ class InteractionAgent:
             f"Planned artifact workflows:\n{task_briefs}"
         )
         try:
-            res = await self.llm.complete_json(system_prompt, user_content, max_tokens=1024)
+            res = await asyncio.wait_for(
+                self.llm.complete_json(
+                    system_prompt,
+                    user_content,
+                    max_tokens=1024,
+                    effort_override="low",
+                ),
+                timeout=12.0,
+            )
             raw_labels = res.get("labels") if isinstance(res.get("labels"), dict) else res
             if not isinstance(raw_labels, dict):
                 return fallback
@@ -151,7 +162,7 @@ class InteractionAgent:
                 },
                 {
                     "label": "Compare normalized growth rates & impact outliers",
-                    "prompt": f"Create a comparative impact and growth-rate breakdown complementing {anchor}, with metric toggles and range brushed selection.",
+                    "prompt": f"Create a comparative impact and growth-rate breakdown complementing {anchor}, with metric toggles and range selection.",
                 },
             ],
         }
@@ -241,7 +252,7 @@ class InteractionAgent:
             '  "narrative": "1 short framing sentence followed by concise bullet highlights for each chart",\n'
             '  "question": "Concise 1-sentence question asking what angle to explore next",\n'
             '  "options": [\n'
-            '    {"label": "Short scannable option title (5-12 words)", "prompt": "Self-contained actionable prompt referencing current workspace findings to create 1-2 new interactive D3 charts"},\n'
+            '    {"label": "Short scannable option title (5-12 words)", "prompt": "Self-contained actionable prompt referencing current workspace findings to create 1-2 new interactive charts"},\n'
             '    {"label": "...", "prompt": "..."},\n'
             '    {"label": "...", "prompt": "..."}\n'
             "  ]\n"
@@ -254,7 +265,15 @@ class InteractionAgent:
             f"Partial failures (if any):\n{failures or []}"
         )
         try:
-            res = await self.llm.complete_json(system_prompt, user_content, max_tokens=2048)
+            res = await asyncio.wait_for(
+                self.llm.complete_json(
+                    system_prompt,
+                    user_content,
+                    max_tokens=2048,
+                    effort_override="low",
+                ),
+                timeout=16.0,
+            )
             raw_narrative = str(res.get("narrative") or "").strip() if isinstance(res, dict) else ""
             cleaned_narrative = re.sub(
                 r"^(?:[✓✅]\s*)?(?:Success[!:.：\s]*\n+|Completed\s+\*{0,2}\d+\*{0,2}\s+[^\n]*artifact\(s\)[^\n]*:\s*\n+)",
@@ -301,7 +320,7 @@ class InteractionAgent:
             "{\n"
             '  "question": "Concise 1-sentence question asking what angle to explore next",\n'
             '  "options": [\n'
-            '    {"label": "Short scannable option title (5-12 words)", "prompt": "Self-contained actionable prompt referencing current workspace findings to create 1-2 new interactive D3 charts"},\n'
+            '    {"label": "Short scannable option title (5-12 words)", "prompt": "Self-contained actionable prompt referencing current workspace findings to create 1-2 new interactive charts"},\n'
             '    {"label": "...", "prompt": "..."},\n'
             '    {"label": "...", "prompt": "..."}\n'
             "  ]\n"
@@ -314,7 +333,15 @@ class InteractionAgent:
             f"Assistant summary:\n{summary_text}"
         )
         try:
-            res = await self.llm.complete_json(system_prompt, user_content, max_tokens=1536)
+            res = await asyncio.wait_for(
+                self.llm.complete_json(
+                    system_prompt,
+                    user_content,
+                    max_tokens=1536,
+                    effort_override="low",
+                ),
+                timeout=14.0,
+            )
             return self._parse_followup_payload(res, fallback)
         except Exception as exc:  # noqa: BLE001
             logger.warning("InteractionAgent follow-up synthesis fallback: %s", exc)

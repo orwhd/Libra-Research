@@ -6,58 +6,24 @@ import io
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import MAX_RETRIES, RUNTIME_DIR
 from ..db import dumps, get_conn, loads, utc_now_iso
-from ..services.openalex_client import DEFAULT_FILTER, fetch_openalex_corpus
 from ..services.sandbox_runner import run_python_sandbox
-from .capability_catalog import DATASET_SCHEMA_GUIDE, PYTHON_SANDBOX_CAPABILITIES
+from ..services.semantic_profiler import build_semantic_profile
+from .capability_catalog import DATASET_SCHEMA_GUIDE, discover_python_sandbox_capabilities
 from .llm_client import LLMClient, extract_code_block
+from .miner_agent import MinerCoordinator, load_uploaded_bundle_parallel, ProgressCallback
 
 
-def _load_uploaded_bundle(upload_id: str) -> dict[str, Any]:
+async def _load_uploaded_bundle(upload_id: str) -> dict[str, Any]:
     upload_dir = RUNTIME_DIR / "uploads" / upload_id
     manifest_path = upload_dir / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"Upload {upload_id} manifest not found.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    files_dir = upload_dir / "files"
-
-    parsed_files: list[dict[str, Any]] = []
-    for rel in manifest.get("files", []):
-        fp = files_dir / rel
-        if not fp.exists():
-            continue
-        ext = fp.suffix.lower()
-        entry: dict[str, Any] = {
-            "relative_path": rel,
-            "extension": ext,
-            "size_bytes": fp.stat().st_size,
-        }
-        try:
-            text = fp.read_text(encoding="utf-8", errors="replace")
-            if ext == ".csv":
-                rows = list(csv.DictReader(io.StringIO(text)))[:5000]
-                entry["format"] = "csv_rows"
-                entry["rows"] = rows
-            elif ext == ".tsv":
-                rows = list(csv.DictReader(io.StringIO(text), delimiter="\t"))[:5000]
-                entry["format"] = "tsv_rows"
-                entry["rows"] = rows
-            elif ext == ".json":
-                entry["format"] = "json"
-                entry["data"] = json.loads(text)
-            elif ext == ".jsonl":
-                entry["format"] = "jsonl"
-                entry["rows"] = [json.loads(line) for line in text.splitlines() if line.strip()][:5000]
-            else:
-                entry["format"] = "text"
-                entry["text"] = text[:100000]
-        except Exception as exc:  # noqa: BLE001
-            entry["format"] = "unparsed"
-            entry["parse_error"] = str(exc)
-        parsed_files.append(entry)
+    parsed_files, miner_count = await load_uploaded_bundle_parallel(upload_dir, manifest)
 
     return {
         "upload_id": upload_id,
@@ -65,6 +31,7 @@ def _load_uploaded_bundle(upload_id: str) -> dict[str, Any]:
         "source_url": manifest.get("source_url"),
         "source_kind": manifest.get("source_kind", "files"),
         "created_at": manifest.get("created_at", utc_now_iso()),
+        "miner_count": miner_count,
         "files": parsed_files,
     }
 
@@ -72,6 +39,7 @@ def _load_uploaded_bundle(upload_id: str) -> dict[str, Any]:
 class DataAgent:
     def __init__(self, llm: LLMClient) -> None:
         self.llm = llm
+        self.miner_coordinator = MinerCoordinator(llm)
 
     def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
         with get_conn() as conn:
@@ -87,11 +55,13 @@ class DataAgent:
         data_scope: str,
         reuse_snapshot_id: str | None = None,
         upload_id: str | None = None,
+        research_prompt: str = "",
+        on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """
-        Either reuses an immutable DatasetSnapshot, ingests user-uploaded files/folder,
-        or retrieves OpenAlex works and runs an LLM-generated Python transformation script
-        inside `python -I` sandbox to produce a new immutable DatasetSnapshot.
+        Either reuses an immutable DatasetSnapshot, ingests user-uploaded files/folder in parallel,
+        or dispatches adaptive parallel Miner Agents to retrieve & screen scholarly works, then runs
+        an LLM-generated Python transformation script inside `python -I` sandbox.
         """
         if reuse_snapshot_id:
             existing = self.get_snapshot(reuse_snapshot_id)
@@ -102,10 +72,11 @@ class DataAgent:
         snap_dir = RUNTIME_DIR / "snapshots" / snapshot_id
         snap_dir.mkdir(parents=True, exist_ok=True)
         records_path = snap_dir / "records.json"
+        sandbox_capabilities = discover_python_sandbox_capabilities()
 
         is_uploaded = bool(upload_id)
         if upload_id:
-            bundle = _load_uploaded_bundle(upload_id)
+            bundle = await _load_uploaded_bundle(upload_id)
             raw_path = snap_dir / "raw_upload.json"
             raw_path.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
             source_url = bundle.get("source_url")
@@ -118,10 +89,11 @@ class DataAgent:
                 "source_url": str(source_url) if source_url else f"upload://{upload_id}",
                 "retrieval_time": bundle["created_at"],
                 "retrieval_mode": "user_attached_url" if source_url else "user_uploaded_files",
-                "query_filter": f"files={len(bundle['files'])} | label={bundle['label']}",
+                "query_filter": f"files={len(bundle['files'])} | miners={bundle.get('miner_count', 1)} | label={bundle['label']}",
                 "raw_record_count": sum(
                     len(f.get("rows", [])) if "rows" in f else 1 for f in bundle["files"]
                 ),
+                "miner_count": bundle.get("miner_count", 1),
                 "api_total_matching_works": None,
                 "fallback_reason": None,
             }
@@ -139,7 +111,11 @@ class DataAgent:
                 for f in bundle["files"][:12]
             ]
         else:
-            corpus = await fetch_openalex_corpus(filter_expr=DEFAULT_FILTER, max_records=400)
+            corpus = await self.miner_coordinator.mine_scholarly_corpus(
+                research_prompt=research_prompt or data_scope,
+                data_scope=data_scope,
+                on_progress=on_progress,
+            )
             works = corpus["works"]
             prov = corpus["provenance"]
             raw_path = snap_dir / "raw_works.json"
@@ -167,7 +143,7 @@ Uploaded Bundle Summary:
 Target data scope for this research task:
 {data_scope}
 
-{PYTHON_SANDBOX_CAPABILITIES}
+{sandbox_capabilities}
 
 Input JSON schema (`sys.argv[1]`):
 {{"upload_id": "...", "label": "...", "files": [{{"relative_path": "...", "extension": "...", "format": "csv_rows|tsv_rows|json|jsonl|text", "rows": [...], "data": ..., "text": "..."}}]}}
@@ -181,7 +157,13 @@ Requirements for the output JSON written to `sys.argv[2]`:
     "retained": <int>,
     "files_parsed": <int>
   }},
-  "transform_steps": [ "<concise step 1>", "<concise step 2>", ... ]
+  "transform_steps": [ "<concise step 1>", "<concise step 2>", ... ],
+  "processing_trace": {{
+    "record_unit": "rows | records | items",
+    "exclusions": [
+      {{"reason_code": "short_code", "reason_label": "Human readable reason", "stage": "Quality Validation | Deduplication | Scope Filter", "rule": "<exact filter rule applied>", "record_indices": [<int>, ...]}}
+    ]
+  }}
 }}
 
 Rules:
@@ -199,7 +181,7 @@ Target data scope for this research task:
 
 {DATASET_SCHEMA_GUIDE}
 
-{PYTHON_SANDBOX_CAPABILITIES}
+{sandbox_capabilities}
 
 Requirements for the output JSON written to `sys.argv[2]`:
 {{
@@ -212,7 +194,14 @@ Requirements for the output JSON written to `sys.argv[2]`:
     "missing_primary_topic": <int>,
     "missing_authorships": <int>
   }},
-  "transform_steps": [ "<concise step 1>", "<concise step 2>", ... ]
+  "transform_steps": [ "<concise step 1>", "<concise step 2>", ... ],
+  "processing_trace": {{
+    "record_unit": "works",
+    "retained_indices": [<0-based indices of retained records from input list>],
+    "exclusions": [
+      {{"reason_code": "missing_year | duplicate_work | scope_filter", "reason_label": "Human readable exclusion reason", "stage": "Quality Validation | Deduplication | Scope Filter", "rule": "<exact filter condition applied>", "record_indices": [<0-based input indices excluded by this rule>]}}
+    ]
+  }}
 }}
 
 Rules:
@@ -224,7 +213,8 @@ Rules:
             raw_resp = await self.llm.complete_text(
                 system_prompt="You are a meticulous scientific data engineer. Output only runnable Python code.",
                 user_content=prompt,
-                max_tokens=16384,
+                max_tokens=8192,
+                effort_override="low",
             )
             script_code = extract_code_block(raw_resp, ("python", "py"))
             sandbox_res = await asyncio.to_thread(
@@ -242,8 +232,28 @@ Rules:
             raise RuntimeError(f"DataAgent failed after {MAX_RETRIES + 1} attempts: {last_error}")
 
         out = sandbox_res.output_data
-        retained = len(out.get("records", []))
+        retained_records = out.get("records", [])
+        retained = len(retained_records)
         now = utc_now_iso()
+        raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
+        try:
+            semantic_profile = await build_semantic_profile(
+                llm=self.llm,
+                raw_payload=raw_payload,
+                retained_records=retained_records,
+                snapshot_id=snapshot_id,
+                source_meta=prov,
+                schema=out.get("schema", {}),
+                missingness_quality=out.get("missingness_quality", {}),
+                transform_steps=out.get("transform_steps", []),
+                data_scope=data_scope,
+                processing_trace=out.get("processing_trace"),
+            )
+        except Exception as prof_exc:  # noqa: BLE001
+            semantic_profile = {
+                "status": "unavailable",
+                "unavailable_reason": f"追踪信息不可用：{type(prof_exc).__name__}: {prof_exc}",
+            }
         upstream_deps = [
             {
                 "name": prov.get("source_name"),
@@ -261,8 +271,9 @@ Rules:
                     retrieval_time, retrieval_mode, query_filter,
                     raw_record_count, retained_record_count,
                     schema_json, missingness_json, transform_steps_json,
-                    upstream_dependencies_json, script_text, records_ref, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    upstream_dependencies_json, script_text, records_ref,
+                    semantic_profile_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot_id,
@@ -280,6 +291,7 @@ Rules:
                     dumps(upstream_deps),
                     script_code,
                     str(records_path.relative_to(RUNTIME_DIR)),
+                    dumps(semantic_profile),
                     now,
                 ),
             )

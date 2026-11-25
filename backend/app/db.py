@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS dataset_snapshots (
     upstream_dependencies_json TEXT NOT NULL,
     script_text TEXT NOT NULL,
     records_ref TEXT NOT NULL,
+    semantic_profile_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 
@@ -163,6 +164,14 @@ def init_db() -> None:
             if "metadata_json" not in msg_cols:
                 conn.execute(
                     "ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            ds_cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(dataset_snapshots)").fetchall()
+            }
+            if "semantic_profile_json" not in ds_cols:
+                conn.execute(
+                    "ALTER TABLE dataset_snapshots ADD COLUMN semantic_profile_json TEXT NOT NULL DEFAULT '{}'"
                 )
             conn.commit()
 

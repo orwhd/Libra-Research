@@ -1,48 +1,151 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import re
+import uuid
 from pathlib import Path
 from typing import Any
 
 from playwright.async_api import async_playwright
 
-from ..config import VENDOR_DIR
+from ..config import RUNTIME_DIR, VENDOR_DIR
 
 CHROME_EXECUTABLE = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
+# Per-event-loop shared Playwright & Chromium instances to avoid ~2s cold process launch per chart
+_LOOP_BROWSERS: dict[int, tuple[Any, Any, Any]] = {}
+_LOOP_LOCKS: dict[int, asyncio.Lock] = {}
+_INFLIGHT_COMMENT_SCREENSHOTS: dict[str, asyncio.Task[Any]] = {}
+_COMMENT_RENDER_JOBS: dict[str, dict[str, Any]] = {}
+_COMPLETED_COMMENT_SCREENSHOTS: set[str] = set()
 
-def _inline_vendor_for_validation(html_text: str) -> str:
+
+def schedule_comment_screenshot(comment_id: str, job_kwargs: dict[str, Any]) -> None:
+    """Register and launch contextual comment screenshot capture asynchronously so Save returns in <15ms."""
+    _COMMENT_RENDER_JOBS[comment_id] = job_kwargs
+
+    async def _runner() -> None:
+        try:
+            await capture_comment_screenshot(**job_kwargs)
+            _COMPLETED_COMMENT_SCREENSHOTS.add(comment_id)
+            _COMMENT_RENDER_JOBS.pop(comment_id, None)
+        except Exception:
+            pass
+
+    task = asyncio.create_task(_runner())
+    _INFLIGHT_COMMENT_SCREENSHOTS[comment_id] = task
+
+    def _cleanup(_t: asyncio.Task[Any]) -> None:
+        _INFLIGHT_COMMENT_SCREENSHOTS.pop(comment_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+async def await_comment_screenshots(comment_ids: list[str] | None = None, timeout: float = 8.0) -> None:
+    """Ensure background comment screenshots have finished (re-rendering on demand if an ephemeral test loop exited early)."""
+    target_ids = (
+        list(set(_INFLIGHT_COMMENT_SCREENSHOTS.keys()) | set(_COMMENT_RENDER_JOBS.keys()))
+        if comment_ids is None
+        else list(comment_ids)
+    )
+    tasks = [_INFLIGHT_COMMENT_SCREENSHOTS[cid] for cid in target_ids if cid in _INFLIGHT_COMMENT_SCREENSHOTS]
+    if tasks:
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+        except Exception:
+            pass
+
+    for cid in target_ids:
+        if cid not in _COMPLETED_COMMENT_SCREENSHOTS and cid in _COMMENT_RENDER_JOBS:
+            job = _COMMENT_RENDER_JOBS.pop(cid, None)
+            if job:
+                try:
+                    await capture_comment_screenshot(**job)
+                    _COMPLETED_COMMENT_SCREENSHOTS.add(cid)
+                except Exception:
+                    pass
+
+_VENDOR_SRC_RE = re.compile(
+    r"""(<script\b[^>]*?\bsrc\s*=\s*["'])/vendor/([A-Za-z0-9._-]+\.js)(["'][^>]*>\s*</script>)""",
+    flags=re.IGNORECASE,
+)
+
+
+def _prepare_local_file_html(html_text: str) -> str:
     """
-    Replace `/vendor/d3.v7.min.js` with inline local bundle during standalone
-    Playwright validation (`set_content` / file context) so the headless check
-    runs completely self-contained without needing a live HTTP server loop.
+    Rewrite `/vendor/<lib>.js` script tags to direct `file://` URIs pointing at `VENDOR_DIR`
+    so Chromium loads local visualization runtimes natively from disk without `document.write`
+    (`page.set_content`) or 1 MB inline script string expansion.
     """
-    d3_file = VENDOR_DIR / "d3.v7.min.js"
-    if d3_file.exists():
-        d3_code = d3_file.read_text(encoding="utf-8")
-        # Escape </script> defensively if present
-        d3_code_safe = d3_code.replace("</script>", "<\\/script>")
-        for src_ref in (
-            '<script src="/vendor/d3.v7.min.js"></script>',
-            "<script src='/vendor/d3.v7.min.js'></script>",
-            '<script src="https://d3js.org/d3.v7.min.js"></script>',
-        ):
-            if src_ref in html_text:
-                html_text = html_text.replace(src_ref, f"<script>\n{d3_code_safe}\n</script>")
-    return html_text
+    def _repl(match: re.Match[str]) -> str:
+        prefix, fname, suffix = match.group(1), match.group(2), match.group(3)
+        candidate = (VENDOR_DIR / fname).resolve()
+        if candidate.exists():
+            return f"{prefix}{candidate.as_uri()}{suffix}"
+        return match.group(0)
+
+    return _VENDOR_SRC_RE.sub(_repl, html_text)
 
 
-async def _launch_browser(p: Any):
+async def _launch_browser(p: Any) -> Any:
+    launch_args = [
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
     try:
-        return await p.chromium.launch(headless=True)
+        return await p.chromium.launch(headless=True, args=launch_args)
     except Exception:
         if CHROME_EXECUTABLE.exists():
             return await p.chromium.launch(
                 headless=True,
                 executable_path=str(CHROME_EXECUTABLE),
+                args=launch_args,
             )
         raise
+
+
+async def _get_shared_browser() -> Any:
+    loop = asyncio.get_running_loop()
+    lid = id(loop)
+    lock = _LOOP_LOCKS.get(lid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LOOP_LOCKS[lid] = lock
+
+    async with lock:
+        cached = _LOOP_BROWSERS.get(lid)
+        if cached is not None:
+            pw_ctx, browser, cached_loop = cached
+            if cached_loop is loop and not loop.is_closed():
+                try:
+                    if browser.is_connected():
+                        return browser
+                except Exception:
+                    pass
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            try:
+                await pw_ctx.stop()
+            except Exception:
+                pass
+            _LOOP_BROWSERS.pop(lid, None)
+
+        pw = await async_playwright().start()
+        browser = await _launch_browser(pw)
+        _LOOP_BROWSERS[lid] = (pw, browser, loop)
+        return browser
+
+
+def _write_temp_html(html_text: str) -> Path:
+    tmp_dir = RUNTIME_DIR / "tmp_validate"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"val_{uuid.uuid4().hex[:12]}.html"
+    tmp_path.write_text(_prepare_local_file_html(html_text), encoding="utf-8")
+    return tmp_path
 
 
 async def validate_html_and_capture(
@@ -53,25 +156,28 @@ async def validate_html_and_capture(
 ) -> dict[str, Any]:
     """
     Validation Agent browser verifier:
-    1. Renders HTML inside an isolated headless Chromium page.
+    1. Loads HTML via real `file://` navigation (`page.goto`) on a reusable headless Chromium instance
+       (eliminating `page.set_content` / `Document.write` parser collisions with `<` inside JS strings).
     2. Captures uncaught `pageerror` & `console.error` diagnostics.
-    3. Inspects rendered DOM (<svg> / <canvas> size, rendered mark count, NaN coords).
-    4. Exercises basic hover / input interaction to verify interactivity without runtime crashes.
+    3. Polls until `<svg>` or `<canvas>` renders at >= 200x150 (fast exit in ~150-300ms when ready).
+    4. Inspects rendered DOM (<svg> / <canvas> size, rendered mark count, NaN coords) & smoke-tests hover.
     5. Saves a genuine PNG screenshot to `thumbnail_path`.
     """
     thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
-    self_contained_html = _inline_vendor_for_validation(html_text)
+    tmp_html_path = _write_temp_html(html_text)
 
     page_errors: list[str] = []
     console_errors: list[str] = []
+    interaction_tested = False
+    dom_check: dict[str, Any] = {}
 
-    async with async_playwright() as p:
-        browser = await _launch_browser(p)
+    try:
+        browser = await _get_shared_browser()
+        context = await browser.new_context(
+            viewport={"width": viewport_width, "height": viewport_height},
+            device_scale_factor=1.5,
+        )
         try:
-            context = await browser.new_context(
-                viewport={"width": viewport_width, "height": viewport_height},
-                device_scale_factor=1.5,
-            )
             page = await context.new_page()
             page.on("pageerror", lambda err: page_errors.append(str(err)))
             page.on(
@@ -81,9 +187,37 @@ async def validate_html_and_capture(
                 else None,
             )
 
-            await page.set_content(self_contained_html, wait_until="load", timeout=15000)
-            # Allow force simulations / animations / transitions to settle into readable frame
-            await page.wait_for_timeout(1400)
+            await page.goto(
+                tmp_html_path.resolve().as_uri(),
+                wait_until="domcontentloaded",
+                timeout=12000,
+            )
+
+            # Fast readiness poll instead of fixed 1400ms sleep
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const svgs = Array.from(document.querySelectorAll('svg'));
+                        const canvases = Array.from(document.querySelectorAll('canvas'));
+                        const okCanvas = canvases.some(c => {
+                            const r = c.getBoundingClientRect();
+                            return r.width >= 200 && r.height >= 150;
+                        });
+                        if (okCanvas) return true;
+                        const okSvg = svgs.some(s => {
+                            const r = s.getBoundingClientRect();
+                            return r.width >= 200 && r.height >= 150;
+                        });
+                        const marks = document.querySelectorAll(
+                            'svg path, svg circle, svg rect, svg line, svg polygon, svg text'
+                        ).length;
+                        return okSvg && marks >= 3;
+                    }""",
+                    timeout=1100,
+                )
+                await page.wait_for_timeout(120)
+            except Exception:
+                await page.wait_for_timeout(250)
 
             dom_check = await page.evaluate(
                 """() => {
@@ -121,6 +255,8 @@ async def validate_html_and_capture(
                     return {
                         svgCount: svgs.length,
                         canvasCount: canvases.length,
+                        hasLargeSvg,
+                        hasLargeCanvas,
                         hasLargeVisual: hasLargeSvg || hasLargeCanvas,
                         svgBoxes,
                         canvasBoxes,
@@ -132,12 +268,10 @@ async def validate_html_and_capture(
                 }"""
             )
 
-            # Hover near center of primary SVG/canvas to smoke-test tooltip / hover handlers
-            interaction_tested = False
             try:
                 target_box = await page.evaluate(
                     """() => {
-                        const el = document.querySelector('svg path, svg circle, svg rect, svg, canvas');
+                        const el = document.querySelector('canvas, svg path, svg circle, svg rect, svg');
                         if (!el) return null;
                         const r = el.getBoundingClientRect();
                         return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -145,29 +279,35 @@ async def validate_html_and_capture(
                 )
                 if target_box and target_box["x"] > 0 and target_box["y"] > 0:
                     await page.mouse.move(target_box["x"], target_box["y"])
-                    await page.wait_for_timeout(150)
+                    await page.wait_for_timeout(80)
                     interaction_tested = True
             except Exception:
                 pass
 
             await page.screenshot(path=str(thumbnail_path), full_page=False)
-            await context.close()
         finally:
-            await browser.close()
+            await context.close()
+    finally:
+        tmp_html_path.unlink(missing_ok=True)
 
     reasons: list[str] = []
     if page_errors:
         reasons.append(f"Uncaught page errors: {page_errors[:3]}")
     if console_errors:
-        # Ignore benign favicon console errors if any
-        real_console_errs = [e for e in console_errors if "favicon" not in e.lower()]
+        real_console_errs = [
+            e for e in console_errors if "favicon" not in e.lower() and "err_file_not_found" not in e.lower()
+        ]
         if real_console_errs:
             reasons.append(f"Console errors: {real_console_errs[:3]}")
     if not dom_check.get("hasLargeVisual"):
         reasons.append(
             f"No rendered <svg> or <canvas> with size >= 200x150 found (svgBoxes={dom_check.get('svgBoxes')}, canvasBoxes={dom_check.get('canvasBoxes')})"
         )
-    if dom_check.get("svgCount", 0) > 0 and dom_check.get("markCount", 0) < 3:
+    if (
+        not dom_check.get("hasLargeCanvas")
+        and dom_check.get("hasLargeSvg")
+        and dom_check.get("markCount", 0) < 3
+    ):
         reasons.append(f"Too few SVG marks rendered ({dom_check.get('markCount')})")
     if dom_check.get("nanAttrs", 0) > 0:
         reasons.append(f"Found {dom_check.get('nanAttrs')} SVG attributes containing NaN/undefined")
@@ -191,38 +331,53 @@ async def capture_comment_screenshot(
     y_norm: float,
     viewport_width: int = 1280,
     viewport_height: int = 720,
+    scroll_x: float = 0.0,
+    scroll_y: float = 0.0,
     filter_state: dict[str, Any] | None = None,
 ) -> Path:
     """
     Captures an authentic contextual screenshot of the Artifact HTML at the
-    user's viewport dimensions and draws a crisp pin reticle at (x_norm, y_norm).
+    user's exact viewport dimensions and scroll offset, hovers the commented spot
+    so any chart tooltip opens in context, and draws a crisp pin reticle at (x_norm, y_norm).
     """
     screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-    self_contained_html = _inline_vendor_for_validation(html_text)
+    tmp_html_path = _write_temp_html(html_text)
     vw = max(480, min(1920, int(viewport_width or 1280)))
     vh = max(360, min(1200, int(viewport_height or 720)))
 
-    async with async_playwright() as p:
-        browser = await _launch_browser(p)
+    try:
+        browser = await _get_shared_browser()
+        context = await browser.new_context(
+            viewport={"width": vw, "height": vh},
+            device_scale_factor=1.5,
+        )
         try:
-            context = await browser.new_context(
-                viewport={"width": vw, "height": vh},
-                device_scale_factor=1.5,
-            )
             page = await context.new_page()
-            await page.set_content(self_contained_html, wait_until="load", timeout=15000)
-            await page.wait_for_timeout(1200)
+            await page.goto(
+                tmp_html_path.resolve().as_uri(),
+                wait_until="domcontentloaded",
+                timeout=12000,
+            )
+            await page.wait_for_timeout(350)
 
-            if filter_state:
+            if filter_state or scroll_x or scroll_y:
                 await page.evaluate(
-                    """(fs) => {
-                        window.postMessage({ type: 'RC_APPLY_VIEW_STATE', filter_state: fs }, '*');
+                    """([fs, sx, sy]) => {
+                        window.postMessage({ type: 'RC_APPLY_VIEW_STATE', filter_state: fs || {}, scroll_x: sx, scroll_y: sy }, '*');
+                        window.scrollTo(sx || 0, sy || 0);
                     }""",
-                    filter_state,
+                    [filter_state or {}, float(scroll_x or 0.0), float(scroll_y or 0.0)],
                 )
-                await page.wait_for_timeout(200)
+                await page.wait_for_timeout(120)
 
-            # Overlay a high-visibility non-destructive pin marker at normalized coordinate
+            try:
+                px = max(2.0, min(vw - 2.0, float(x_norm) * vw))
+                py = max(2.0, min(vh - 2.0, float(y_norm) * vh))
+                await page.mouse.move(px, py)
+                await page.wait_for_timeout(100)
+            except Exception:
+                pass
+
             await page.evaluate(
                 """([xn, yn]) => {
                     const marker = document.createElement('div');
@@ -253,8 +408,9 @@ async def capture_comment_screenshot(
                 [x_norm, y_norm],
             )
             await page.screenshot(path=str(screenshot_path), full_page=False)
-            await context.close()
         finally:
-            await browser.close()
+            await context.close()
+    finally:
+        tmp_html_path.unlink(missing_ok=True)
 
     return screenshot_path

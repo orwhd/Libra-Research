@@ -2,13 +2,20 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createWorkspace,
   deleteArtifactVersion,
+  getLLMSettings,
+  getWeeklyTrendingCharts,
   getWorkspaceDetail,
   listWorkspaces,
   submitTask,
   subscribeToRunEvents,
   updateVersionPosition,
 } from './api';
-import type { Workspace, WorkspaceDetailResponse } from './types';
+import type {
+  LLMSettings,
+  WeeklyTrendingChartsResponse,
+  Workspace,
+  WorkspaceDetailResponse,
+} from './types';
 import { LandingHero } from './components/LandingHero';
 import { ChatSidebar } from './components/ChatSidebar';
 import { InfiniteCanvas } from './components/InfiniteCanvas';
@@ -16,6 +23,7 @@ import { ArtifactModal, type ModalState } from './components/ArtifactModal';
 import { DebugInspectorPage } from './components/DebugInspectorPage';
 
 const STORAGE_WS_KEY = 'whales_research_canvas_workspace_id';
+const STORAGE_WS_LIST_KEY = 'whales_research_canvas_workspaces_cache';
 const STORAGE_SIDEBAR_W_KEY = 'whales_research_canvas_sidebar_width';
 const MIN_SIDEBAR_WIDTH = 320;
 const DEFAULT_SIDEBAR_WIDTH = 390;
@@ -38,12 +46,22 @@ function syncDebugQueryParam(enabled: boolean): void {
 }
 
 export const App: React.FC = () => {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_WS_LIST_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(() =>
     localStorage.getItem(STORAGE_WS_KEY)
   );
   const [detail, setDetail] = useState<WorkspaceDetailResponse | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [attachedCardIds, setAttachedCardIds] = useState<string[]>([]);
+  const [focusComposerSeq, setFocusComposerSeq] = useState(0);
   const [modalState, setModalState] = useState<ModalState>({ mode: 'closed' });
   const [debugMode, setDebugMode] = useState<boolean>(
     () => new URLSearchParams(window.location.search).get('debug') === '1'
@@ -58,6 +76,9 @@ export const App: React.FC = () => {
   });
   const [isResizing, setIsResizing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [llmSettings, setLlmSettings] = useState<LLMSettings | null>(null);
+  const [weeklyTrending, setWeeklyTrending] = useState<WeeklyTrendingChartsResponse | null>(null);
+  const [trendingLoading, setTrendingLoading] = useState(true);
 
   const subscriptionsRef = useRef<Map<string, () => void>>(new Map());
   const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -73,6 +94,11 @@ export const App: React.FC = () => {
   const refreshWorkspaces = useCallback(async () => {
     const list = await listWorkspaces();
     setWorkspaces(list);
+    try {
+      localStorage.setItem(STORAGE_WS_LIST_KEY, JSON.stringify(list));
+    } catch {
+      /* ignore storage quota errors */
+    }
     return list;
   }, []);
 
@@ -104,6 +130,35 @@ export const App: React.FC = () => {
   useEffect(() => {
     let active = true;
     const initialDebug = new URLSearchParams(window.location.search).get('debug') === '1';
+    (async () => {
+      try {
+        const s = await getLLMSettings();
+        if (active) setLlmSettings(s);
+      } catch {
+        if (active) {
+          setLlmSettings({
+            configured: false,
+            provider: 'deepseek',
+            base_url: 'https://api.deepseek.com',
+            model: 'deepseek-chat',
+            thinking_effort: 'medium',
+            available_models: [],
+            api_key_masked: '',
+            has_env_fallback: false,
+          });
+        }
+      }
+    })();
+    (async () => {
+      try {
+        const trending = await getWeeklyTrendingCharts();
+        if (active) setWeeklyTrending(trending);
+      } catch {
+        /* fallback handled gracefully when trending is null */
+      } finally {
+        if (active) setTrendingLoading(false);
+      }
+    })();
     (async () => {
       const list = await refreshWorkspaces();
       if (!active) return;
@@ -201,6 +256,7 @@ export const App: React.FC = () => {
     localStorage.setItem(STORAGE_WS_KEY, wsId);
     setActiveWorkspaceId(wsId);
     setSelectedIds([]);
+    setAttachedCardIds([]);
     setModalState({ mode: 'closed' });
     await refreshDetail(wsId);
   };
@@ -210,20 +266,9 @@ export const App: React.FC = () => {
     setActiveWorkspaceId(null);
     setDetail(null);
     setSelectedIds([]);
+    setAttachedCardIds([]);
     setModalState({ mode: 'closed' });
     void refreshWorkspaces();
-  };
-
-  const handleOpenWorkspaceByTitle = async (title: string) => {
-    const latest = await refreshWorkspaces();
-    const match = latest.find((w) => w.title === title);
-    if (match) {
-      await handleSelectWorkspace(match.workspace_id);
-      return;
-    }
-    const created = await createWorkspace(title);
-    await refreshWorkspaces();
-    await handleSelectWorkspace(created.workspace_id);
   };
 
   const handleSubmitPrompt = async (prompt: string, uploadId?: string | null) => {
@@ -236,13 +281,18 @@ export const App: React.FC = () => {
         localStorage.setItem(STORAGE_WS_KEY, wsId);
         setActiveWorkspaceId(wsId);
       }
+      const effectiveTargetIds = Array.from(new Set([...attachedCardIds, ...selectedIds]));
       const run = await submitTask(wsId, {
         prompt,
-        selected_artifact_version_ids: selectedIds,
+        target_artifact_version_id:
+          effectiveTargetIds.length === 1 ? effectiveTargetIds[0] : null,
+        selected_artifact_version_ids: effectiveTargetIds,
         apply_pending_comments: true,
         upload_id: uploadId ?? null,
       });
+      setAttachedCardIds([]);
       await refreshDetail(wsId);
+      void refreshWorkspaces();
       attachRunSubscription(run.run_id, wsId);
     } finally {
       setSubmitting(false);
@@ -300,6 +350,7 @@ export const App: React.FC = () => {
   const handleDeleteVersion = async (versionId: string) => {
     await deleteArtifactVersion(versionId);
     setSelectedIds((prev) => prev.filter((id) => id !== versionId));
+    setAttachedCardIds((prev) => prev.filter((id) => id !== versionId));
     setModalState((prev) => {
       if (prev.mode === 'single' && prev.versionId === versionId) {
         return { mode: 'closed' };
@@ -317,6 +368,18 @@ export const App: React.FC = () => {
       }
       return prev;
     });
+    if (detail) {
+      await refreshDetail(detail.workspace.workspace_id);
+    }
+  };
+
+  const handleDeleteMultipleVersions = async (versionIds: string[]) => {
+    for (const vid of versionIds) {
+      await deleteArtifactVersion(vid);
+    }
+    const delSet = new Set(versionIds);
+    setSelectedIds((prev) => prev.filter((id) => !delSet.has(id)));
+    setAttachedCardIds((prev) => prev.filter((id) => !delSet.has(id)));
     if (detail) {
       await refreshDetail(detail.workspace.workspace_id);
     }
@@ -347,9 +410,12 @@ export const App: React.FC = () => {
         <LandingHero
           workspaces={workspaces}
           submitting={submitting}
+          llmSettings={llmSettings}
+          trendingCharts={weeklyTrending}
+          trendingLoading={trendingLoading}
+          onLLMSettingsChange={setLlmSettings}
           onSubmitPrompt={handleSubmitPrompt}
           onSelectWorkspace={(id) => void handleSelectWorkspace(id)}
-          onOpenWorkspaceByTitle={handleOpenWorkspaceByTitle}
         />
         <button
           type="button"
@@ -430,9 +496,14 @@ export const App: React.FC = () => {
           eventsByRun={detail.events_by_run}
           artifactVersions={detail.artifact_versions}
           selectedIds={selectedIds}
+          attachedCardIds={attachedCardIds}
+          focusComposerSeq={focusComposerSeq}
           submitting={submitting}
           onNewWorkspace={handleNewWorkspace}
           onSubmitPrompt={handleSubmitPrompt}
+          onRemoveAttachedCard={(vid) =>
+            setAttachedCardIds((prev) => prev.filter((id) => id !== vid))
+          }
           onOpenVersion={(vid) => setModalState({ mode: 'single', versionId: vid })}
         />
 
@@ -461,6 +532,12 @@ export const App: React.FC = () => {
             setModalState({ mode: 'compare', leftId, rightId })
           }
           onDeleteVersion={(vid) => void handleDeleteVersion(vid)}
+          onDeleteVersions={(vids) => void handleDeleteMultipleVersions(vids)}
+          onAttachToChat={(vids) => {
+            setAttachedCardIds((prev) => Array.from(new Set([...prev, ...vids])));
+            setSelectedIds((prev) => Array.from(new Set([...prev, ...vids])));
+            setFocusComposerSeq((s) => s + 1);
+          }}
           onMoveVersion={(versionId, x, y, commit) => {
             setDetail((prev) => {
               if (!prev) return prev;

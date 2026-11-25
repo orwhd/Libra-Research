@@ -1,9 +1,13 @@
-# Environment & Secrets
+# Environment & Secrets (NEVER commit API keys or local user configs)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 backend/.env
 frontend/.env
+**/user_api_config.json
+*.sqlite
+*.sqlite-*
+*.db
 
 # Internal test prompt / handoff materials
 docs/Coding_Design_Test.pdf

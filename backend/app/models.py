@@ -120,11 +120,143 @@ class LineageEdge(BaseModel):
     relation: str
 
 
+FlowOutcomeKind = Literal["retained", "excluded", "transformed", "unclassified"]
+
+
+class FlowSubcategory(BaseModel):
+    id: str
+    label: str
+    raw_count: int
+    retained_count: int
+    excluded_count: int
+    rule_summary: str = ""
+
+
+class FlowSourceNode(BaseModel):
+    id: str
+    label: str
+    provider: str
+    source_url: str = ""
+    retrieval_mode: str = ""
+    raw_count: int
+    record_unit: str = "records"
+    snapshot_id: str
+
+
+class FlowCategoryNode(BaseModel):
+    id: str
+    label: str
+    description: str
+    field_basis: str
+    rule_summary: str
+    confidence: Literal["high", "medium", "low"]
+    verifiable_status: Literal["verified_field", "derived_rule", "unverified"]
+    dataset_version: str
+    raw_count: int
+    retained_count: int
+    excluded_count: int
+    transformed_count: int = 0
+    is_unclassified: bool = False
+    subcategories: list[FlowSubcategory] = Field(default_factory=list)
+    secondary_tags: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FlowOutcomeCategoryRef(BaseModel):
+    category_id: str
+    category_label: str
+    count: int
+
+
+class FlowOutcomeNode(BaseModel):
+    id: str
+    outcome_kind: FlowOutcomeKind
+    label: str
+    count: int
+    stage: str
+    reason_code: str = ""
+    reason_label: str = ""
+    filter_rule: str = ""
+    affected_categories: list[FlowOutcomeCategoryRef] = Field(default_factory=list)
+
+
+class FlowDatasetNode(BaseModel):
+    id: str
+    snapshot_id: str
+    label: str
+    version_label: str
+    retained_count: int
+    record_unit: str = "records"
+    schema_field_count: int = 0
+    transform_steps: list[str] = Field(default_factory=list)
+    created_at: str = ""
+
+
+class FlowAnalysisNode(BaseModel):
+    id: str
+    analysis_run_id: str
+    label: str
+    algorithm: str
+    input_count: int
+    input_unit: str = "records"
+    output_count: int
+    output_unit: str = "records"
+    unit_changed: bool = False
+    conversion_explanation: str = ""
+    summary_headline: str = ""
+    key_metrics: dict[str, Any] = Field(default_factory=dict)
+    artifact_version_id: str = ""
+    artifact_title: str = ""
+    chart_kind: str = ""
+
+
+class FlowLink(BaseModel):
+    id: str
+    source_id: str
+    target_id: str
+    source_col: int
+    target_col: int
+    value: int
+    outcome_kind: FlowOutcomeKind
+    category_id: str | None = None
+    label: str = ""
+    unit_changed: bool = False
+    conversion_note: str = ""
+
+
+class ConservationReport(BaseModel):
+    passed: bool
+    is_exact_conservation: bool
+    unit_conversion_explained: bool
+    input_count: int
+    retained_count: int
+    excluded_count: int
+    delta: int
+    notes: list[str] = Field(default_factory=list)
+
+
+class SemanticDataFlow(BaseModel):
+    status: Literal["complete", "partial", "unavailable"]
+    unavailable_reason: str | None = None
+    record_unit: str = "records"
+    total_input_count: int
+    total_retained_count: int
+    total_excluded_count: int
+    conservation_check: ConservationReport
+    sources: list[FlowSourceNode] = Field(default_factory=list)
+    categories: list[FlowCategoryNode] = Field(default_factory=list)
+    outcomes: list[FlowOutcomeNode] = Field(default_factory=list)
+    datasets: list[FlowDatasetNode] = Field(default_factory=list)
+    analyses: list[FlowAnalysisNode] = Field(default_factory=list)
+    links: list[FlowLink] = Field(default_factory=list)
+
+
 class LineageGraph(BaseModel):
     artifact_version_id: str
     generated_at: str
     nodes: list[LineageNode]
     edges: list[LineageEdge]
+    lineage_schema_version: int = 1
+    semantic_flow: SemanticDataFlow | None = None
 
 
 class RunEvent(BaseModel):
@@ -238,3 +370,74 @@ class CanvasResponse(BaseModel):
     workspace_id: str
     artifact_versions: list[ArtifactVersion]
     edges: list[dict[str, str]]
+
+
+ThinkingEffort = Literal["low", "medium", "high"]
+
+
+class LLMSettingsResponse(BaseModel):
+    configured: bool
+    provider: str = "deepseek"
+    base_url: str
+    model: str
+    thinking_effort: ThinkingEffort = "medium"
+    available_models: list[str] = Field(default_factory=list)
+    api_key_masked: str = ""
+    has_env_fallback: bool = False
+
+
+class UpdateLLMSettingsRequest(BaseModel):
+    provider: str = Field(default="deepseek", max_length=60)
+    api_key: str = Field(default="", max_length=500)
+    base_url: str = Field(min_length=8, max_length=500)
+    model: str = Field(min_length=1, max_length=160)
+    thinking_effort: ThinkingEffort = "medium"
+    available_models: list[str] = Field(default_factory=list)
+
+
+class UpdateLLMSelectionRequest(BaseModel):
+    model: str | None = Field(default=None, max_length=160)
+    thinking_effort: ThinkingEffort | None = None
+
+
+class FetchModelsRequest(BaseModel):
+    api_key: str = Field(default="", max_length=500)
+    base_url: str = Field(min_length=8, max_length=500)
+
+
+class FetchModelsResponse(BaseModel):
+    models: list[str] = Field(default_factory=list)
+    count: int = 0
+
+
+TrendingChartIconKind = Literal[
+    "trend",
+    "network",
+    "bundling",
+    "heatmap",
+    "flow",
+    "hierarchy",
+    "scatter",
+    "radial",
+]
+
+
+class TrendingChartItem(BaseModel):
+    id: str
+    title: str
+    icon_kind: TrendingChartIconKind
+    summary: str
+    interactions: list[str] = Field(default_factory=list)
+    prompt: str
+    source_label: str
+    source_url: str = ""
+    schematic_svg: str = ""
+
+
+class WeeklyTrendingChartsResponse(BaseModel):
+    iso_week: str
+    fetched_at: str
+    expires_at: str
+    cached: bool
+    sources: list[str] = Field(default_factory=list)
+    items: list[TrendingChartItem] = Field(default_factory=list)

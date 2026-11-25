@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
+import re
 from typing import Any
 
 from ..config import RUNTIME_DIR
-from .capability_catalog import D3_V7_CAPABILITY_GUIDE, IFRAME_VIEW_STATE_BRIDGE
+from .capability_catalog import (
+    IFRAME_VIEW_STATE_BRIDGE,
+    build_visualization_capability_guide,
+    rewrite_cdn_scripts_to_local_vendor,
+)
 from .llm_client import LLMClient, extract_code_block
 
 
@@ -25,41 +29,43 @@ def _summarize_structure(obj: Any, max_list_items: int = 3, depth: int = 0) -> A
 
 
 _CHART_FIRST_LAYOUT_STYLE = """<style data-rc-chart-first="1">
-:is(div, main, section):has(> header):has(> :has(svg), > svg) {
+:is(div, main, section):has(> :is(header, nav, form, .controls, .toolbar, .filters)):has(> :is(svg, canvas, [data-rc-chart-stage], [id*="chart" i], [class*="chart" i], [id*="viz" i], [class*="viz" i], [id*="graph" i], [class*="graph" i], [id*="plot" i], [class*="plot" i], :has(svg), :has(canvas), :has([data-rc-chart-stage]))) {
   display: flex !important;
   flex-direction: column !important;
   gap: 14px !important;
 }
-:is(div, main, section):has(> header):has(> :has(svg), > svg) > * {
+:is(div, main, section):has(> :is(header, nav, form, .controls, .toolbar, .filters)):has(> :is(svg, canvas, [data-rc-chart-stage], [id*="chart" i], [class*="chart" i], [id*="viz" i], [class*="viz" i], [id*="graph" i], [class*="graph" i], [id*="plot" i], [class*="plot" i], :has(svg), :has(canvas), :has([data-rc-chart-stage]))) > * {
   margin-top: 0 !important;
   order: 2;
 }
-:is(div, main, section):has(> header):has(> :has(svg), > svg) > :is(svg, :has(svg)) {
+:is(div, main, section):has(> :is(header, nav, form, .controls, .toolbar, .filters)):has(> :is(svg, canvas, [data-rc-chart-stage], [id*="chart" i], [class*="chart" i], [id*="viz" i], [class*="viz" i], [id*="graph" i], [class*="graph" i], [id*="plot" i], [class*="plot" i], :has(svg), :has(canvas), :has([data-rc-chart-stage]))) > :is(svg, canvas, [data-rc-chart-stage], [id*="chart" i], [class*="chart" i], [id*="viz" i], [class*="viz" i], [id*="graph" i], [class*="graph" i], [id*="plot" i], [class*="plot" i], :has(svg), :has(canvas), :has([data-rc-chart-stage])) {
   order: 1 !important;
 }
 body {
-  padding-bottom: 84px !important;
+  padding-bottom: 112px !important;
 }
 </style>"""
 
 
 def _inject_data_and_bridge(html_code: str, analysis_result: dict[str, Any]) -> str:
-    safe_json = json.dumps(analysis_result, ensure_ascii=False).replace("</script>", "<\\/script>")
+    safe_json = re.sub(
+        r"</script",
+        r"<\\/script",
+        json.dumps(analysis_result, ensure_ascii=False),
+        flags=re.IGNORECASE,
+    )
     placeholder = "__ANALYSIS_DATA_JSON__"
 
     if placeholder in html_code:
         html_code = html_code.replace(placeholder, safe_json)
     else:
-        # Fallback if model forgot placeholder: inject script#analysis-data inside <head> or <body>
         tag = f'<script id="analysis-data" type="application/json">{safe_json}</script>'
         if "</head>" in html_code:
             html_code = html_code.replace("</head>", f"{tag}\n</head>", 1)
         else:
             html_code = f"{tag}\n{html_code}"
 
-    # Guarantee local D3 script path
-    html_code = html_code.replace("https://d3js.org/d3.v7.min.js", "/vendor/d3.v7.min.js")
-    html_code = html_code.replace("https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js", "/vendor/d3.v7.min.js")
+    html_code = rewrite_cdn_scripts_to_local_vendor(html_code)
 
     if 'data-rc-chart-first="1"' not in html_code:
         if "</head>" in html_code:
@@ -67,7 +73,7 @@ def _inject_data_and_bridge(html_code: str, analysis_result: dict[str, Any]) -> 
         else:
             html_code = f"{_CHART_FIRST_LAYOUT_STYLE}\n{html_code}"
 
-    if 'data-rc-bridge="1"' not in html_code:
+    if "data-rc-bridge=" not in html_code:
         if "</body>" in html_code:
             html_code = html_code.replace("</body>", f"{IFRAME_VIEW_STATE_BRIDGE}\n</body>", 1)
         else:
@@ -94,19 +100,37 @@ class VisualizationAgent:
         result_path = RUNTIME_DIR / analysis_run["result_ref"]
         analysis_result = json.loads(result_path.read_text(encoding="utf-8"))
         structure_preview = _summarize_structure(analysis_result, max_list_items=4)
+        capability_guide = build_visualization_capability_guide()
 
         comment_block = ""
         image_parts: list[dict[str, Any]] = []
         if comments:
             formatted = []
             for c in comments:
+                pvs = c.get("preview_view_state") or {}
+                fstate = pvs.get("filter_state") if isinstance(pvs, dict) else {}
+                target_insp = fstate.get("__target_inspector") if isinstance(fstate, dict) else None
+                clean_fstate = (
+                    {fk: fv for fk, fv in fstate.items() if fk != "__target_inspector"}
+                    if isinstance(fstate, dict)
+                    else {}
+                )
                 formatted.append(
                     {
                         "comment_id": c["comment_id"],
                         "text": c["text"],
                         "anchor_norm": c.get("anchor"),
+                        "scroll_offset": {
+                            "scroll_x": pvs.get("scroll_x", 0) if isinstance(pvs, dict) else 0,
+                            "scroll_y": pvs.get("scroll_y", 0) if isinstance(pvs, dict) else 0,
+                        },
                         "element_hint": c.get("optional_element_hint"),
-                        "preview_view_state": c.get("preview_view_state"),
+                        "target_inspector": target_insp,
+                        "active_ui_filters": clean_fstate,
+                        "viewport": {
+                            "width": pvs.get("viewport_width", 1280) if isinstance(pvs, dict) else 1280,
+                            "height": pvs.get("viewport_height", 720) if isinstance(pvs, dict) else 720,
+                        },
                     }
                 )
                 shot_ref = c.get("screenshot_ref")
@@ -123,13 +147,11 @@ class VisualizationAgent:
             comment_block = f"""
 USER VISUAL COMMENTS TO ADDRESS IN THIS REVISION:
 {json.dumps(formatted, ensure_ascii=False, indent=2)}
-Carefully examine the anchor locations, view states, and attached screenshots (red reticle marks where the user clicked), and directly solve every visual/layout/readability critique!
+Carefully inspect the anchor locations, view states, and attached screenshots (red reticle marks where the user clicked), and directly resolve every visual/layout/interaction critique while keeping existing working features intact!
 """
 
         parent_block = ""
         if parent_html and not previous_attempt_html:
-            # Strip large embedded JSON payload from parent HTML to save context
-            import re
             compact_parent = re.sub(
                 r'(<script id="analysis-data"[^>]*>)(.*?)(</script>)',
                 r"\1__ANALYSIS_DATA_JSON__\3",
@@ -137,7 +159,7 @@ Carefully examine the anchor locations, view states, and attached screenshots (r
                 flags=re.DOTALL,
             )
             parent_block = f"""
-EXISTING PARENT HTML (revise and improve this while preserving data fidelity & core interaction):
+EXISTING PARENT HTML (revise surgically to address the request/comments while preserving data fidelity & working interactions):
 ```html
 {compact_parent[:14000]}
 ```
@@ -145,7 +167,6 @@ EXISTING PARENT HTML (revise and improve this while preserving data fidelity & c
 
         retry_block = ""
         if validation_feedback:
-            import re
             compact_prev = ""
             if previous_attempt_html:
                 compact_prev = re.sub(
@@ -165,31 +186,31 @@ Previous broken HTML:
 """
 
         text_prompt = f"""
-You are the Visualization / HTML Agent. Design and implement a complete, self-contained, highly interactive, publication-grade HTML5 + CSS + D3.js v7 visualization page.
+You are the Visualization Agent in a generalizable scientific visual analytics harness.
+Interpret the visualization requirements, select the most suitable local visualization library/algorithm from the discovered runtime catalog below, and implement a complete, interactive, publication-grade HTML5 visualization page.
 
 Artifact Title: {title}
-Chart Paradigm: {chart_kind}
+Visualization Paradigm / Context: {chart_kind}
 Visualization & Interaction Goal:
 {visualization_goal}
 
 Exact Schema & Sample of `ANALYSIS_DATA` (embedded at runtime in `<script id="analysis-data" type="application/json">__ANALYSIS_DATA_JSON__</script>`):
-{json.dumps(structure_preview, ensure_ascii=False, indent=2)[:8000]}
+{json.dumps(structure_preview, ensure_ascii=False, indent=2)[:7500]}
 
-{D3_V7_CAPABILITY_GUIDE}
+{capability_guide}
 
 {comment_block}
 {parent_block}
 {retry_block}
 
-Critical Engineering Requirements:
-1. Reference `<script src="/vendor/d3.v7.min.js"></script>` in `<head>`.
+Engineering Requirements:
+1. Select and include `<script src="/vendor/..."></script>` in `<head>` for whichever discovered local runtime(s) best fit the visualization goal (e.g. Apache ECharts 5 `/vendor/echarts.min.js`, D3.js v7 `/vendor/d3.v7.min.js`, Chart.js 4 `/vendor/chart.umd.min.js`, or native SVG/Canvas/WebGL). Never rely on external CDN links.
 2. Include `<script id="analysis-data" type="application/json">__ANALYSIS_DATA_JSON__</script>` verbatim so the harness embeds the real computed JSON without mutation.
-3. Read `const RAW = JSON.parse(document.getElementById('analysis-data').textContent); const DATA = RAW.data;` and `const SUMMARY = RAW.summary || {{}};` at startup. Inspect ONLY keys actually present in the schema above!
-4. Render a responsive, legible light-mode interactive research interface:
-   - Place the primary interactive D3 `<svg>` chart container FIRST at the top of the page, and place any summary KPI table/cards, empirical headline from `SUMMARY.headline`, and interactive controls (metric selector, year range / threshold slider, search/highlight input, bundle tension slider, reset zoom button — tailored to THIS chart!) BELOW the chart container.
-   - Rich floating tooltip on hover showing exact scholarly details (paper count, citations, author/institution, degree, community, bundle paths, exact metric values) clamped inside the viewport.
-   - Support pan/zoom or drag/highlight where appropriate for network & hierarchical layouts.
-   - Ensure initial render happens immediately inside `DOMContentLoaded` (or bottom script) with synchronous force ticks if using `forceSimulation`, so within 1 second all SVG marks have valid finite numeric coordinates (NO `NaN`, NO `undefined`, NO 0x0 SVG).
+3. Read `const RAW = JSON.parse(document.getElementById('analysis-data').textContent); const DATA = RAW.data; const SUMMARY = RAW.summary || {{}};` at startup, referencing ONLY keys actually present in the schema above.
+4. Keep code concise, clean, and fast-rendering:
+   - Place the primary interactive chart stage FIRST at the top of `<body>` with `data-rc-chart-stage="1"` and explicit non-zero height (e.g. `height: 540px; width: 100%;`), and place all controls, filters, KPI summaries, and legends BELOW the chart stage.
+   - Keep `body {{ padding-bottom: 112px; }}` and NEVER anchor fixed/sticky elements near the bottom 96px dock zone.
+   - Render synchronously on load (no slow entrance delays; pre-tick iterative layouts if used) so `<svg>` or `<canvas>` is immediately >= 200x150 with zero `NaN`/`undefined` attributes.
 5. Output ONLY the complete HTML document inside ```html ... ```.
 """
 
@@ -200,17 +221,18 @@ Critical Engineering Requirements:
 
         raw_html = await self.llm.complete_text(
             system_prompt=(
-                "You are an expert data visualization engineer specializing in D3.js v7 and interactive scientific graphics. "
-                "Output ONLY clean, valid, complete HTML inside a single ```html ... ``` code block."
+                "You are an expert interactive data visualization engineer. "
+                "Autonomously select the optimal visualization library and visual encoding for the data and goal, "
+                "and output ONLY clean, valid, complete HTML inside a single ```html ... ``` code block."
             ),
             user_content=user_content,
-            max_tokens=24576,
+            max_tokens=16384,
+            effort_override="low",
         )
         html_code = extract_code_block(raw_html, ("html", "htm"))
         final_html = _inject_data_and_bridge(html_code, analysis_result)
 
         if inject_fault:
-            # Deliberate runtime JS error injected ONLY when S11 fault-injection test flag is active
             fault_script = '<script>/* S11_INJECTED_FAULT */ throw new Error("Simulated Visualization JS Runtime Fault for S11 Retry Verification");</script>'
             if "</body>" in final_html:
                 final_html = final_html.replace("</body>", f"{fault_script}\n</body>", 1)

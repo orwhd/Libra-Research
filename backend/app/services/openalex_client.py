@@ -95,6 +95,96 @@ def load_seed_corpus(seed_path: Path = DATA_SEED_PATH) -> tuple[list[dict[str, A
     return works, provenance
 
 
+async def fetch_openalex_shard(
+    client: httpx.AsyncClient,
+    *,
+    search_query: str = "",
+    filter_expr: str = "",
+    sort_expr: str = "cited_by_count:desc",
+    max_records: int = 150,
+    page: int = 1,
+) -> dict[str, Any]:
+    """
+    Fetch a single OpenAlex query shard for a parallel MinerWorker.
+    Supports full-text/topic `search`, structured `filter`, `sort`, and pagination,
+    with automatic fallback if a custom filter/sort expression is rejected by OpenAlex.
+    """
+    api_key = OPENALEX_API_KEY
+    clean_search = search_query.strip()
+    clean_filter = filter_expr.strip()
+    clean_sort = sort_expr.strip() or "cited_by_count:desc"
+    if "relevance_score" in clean_sort and not clean_search:
+        clean_sort = "cited_by_count:desc"
+
+    per_page = min(200, max(20, int(max_records)))
+    pages = max(1, min(2, (max_records + per_page - 1) // per_page))
+
+    async def _run_query(use_filter: str, use_sort: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        meta_first: dict[str, Any] = {}
+        for p_idx in range(page, page + pages):
+            params: dict[str, Any] = {
+                "per_page": per_page,
+                "page": p_idx,
+            }
+            if clean_search:
+                params["search"] = clean_search
+            if use_filter:
+                params["filter"] = use_filter
+            if use_sort:
+                params["sort"] = use_sort
+            if api_key:
+                params["api_key"] = api_key
+
+            resp = await client.get(OPENALEX_WORKS_URL, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+            if not meta_first:
+                meta_first = payload.get("meta") or {}
+            batch = payload.get("results") or []
+            if not batch:
+                break
+            for raw in batch:
+                if raw.get("is_retracted"):
+                    continue
+                collected.append(trim_work(raw))
+                if len(collected) >= max_records:
+                    break
+            if len(collected) >= max_records or len(batch) < per_page:
+                break
+        return collected, meta_first
+
+    try:
+        works, meta = await _run_query(clean_filter, clean_sort)
+        effective_filter = clean_filter
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (400, 422) and (clean_filter or clean_sort != "cited_by_count:desc"):
+            # Recover if LLM emitted an unsupported OpenAlex filter key; preserve year filter if present
+            year_only = ""
+            for token in clean_filter.split(","):
+                if token.strip().startswith("publication_year:"):
+                    year_only = token.strip()
+                    break
+            fallback_sort = "relevance_score:desc" if clean_search else "cited_by_count:desc"
+            works, meta = await _run_query(year_only, fallback_sort)
+            effective_filter = year_only
+        else:
+            raise
+
+    query_parts = []
+    if clean_search:
+        query_parts.append(f"search={clean_search}")
+    if effective_filter:
+        query_parts.append(f"filter={effective_filter}")
+    query_parts.append(f"sort={clean_sort}")
+
+    return {
+        "works": works[:max_records],
+        "total_available": meta.get("count"),
+        "query_desc": " & ".join(query_parts),
+    }
+
+
 async def fetch_openalex_corpus(
     filter_expr: str = DEFAULT_FILTER,
     max_records: int = 400,

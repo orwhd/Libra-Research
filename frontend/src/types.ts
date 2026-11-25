@@ -103,11 +103,142 @@ export interface LineageEdge {
   relation: string;
 }
 
+export type FlowOutcomeKind = 'retained' | 'excluded' | 'transformed' | 'unclassified';
+
+export interface FlowSubcategory {
+  id: string;
+  label: string;
+  raw_count: number;
+  retained_count: number;
+  excluded_count: number;
+  rule_summary: string;
+}
+
+export interface FlowSourceNode {
+  id: string;
+  label: string;
+  provider: string;
+  source_url: string;
+  retrieval_mode: string;
+  raw_count: number;
+  record_unit: string;
+  snapshot_id: string;
+}
+
+export interface FlowCategoryNode {
+  id: string;
+  label: string;
+  description: string;
+  field_basis: string;
+  rule_summary: string;
+  confidence: 'high' | 'medium' | 'low';
+  verifiable_status: 'verified_field' | 'derived_rule' | 'unverified';
+  dataset_version: string;
+  raw_count: number;
+  retained_count: number;
+  excluded_count: number;
+  transformed_count: number;
+  is_unclassified: boolean;
+  subcategories: FlowSubcategory[];
+  secondary_tags: { label: string; count: number }[];
+}
+
+export interface FlowOutcomeCategoryRef {
+  category_id: string;
+  category_label: string;
+  count: number;
+}
+
+export interface FlowOutcomeNode {
+  id: string;
+  outcome_kind: FlowOutcomeKind;
+  label: string;
+  count: number;
+  stage: string;
+  reason_code: string;
+  reason_label: string;
+  filter_rule: string;
+  affected_categories: FlowOutcomeCategoryRef[];
+}
+
+export interface FlowDatasetNode {
+  id: string;
+  snapshot_id: string;
+  label: string;
+  version_label: string;
+  retained_count: number;
+  record_unit: string;
+  schema_field_count: number;
+  transform_steps: string[];
+  created_at: string;
+}
+
+export interface FlowAnalysisNode {
+  id: string;
+  analysis_run_id: string;
+  label: string;
+  algorithm: string;
+  input_count: number;
+  input_unit: string;
+  output_count: number;
+  output_unit: string;
+  unit_changed: boolean;
+  conversion_explanation: string;
+  summary_headline: string;
+  key_metrics: Record<string, unknown>;
+  artifact_version_id: string;
+  artifact_title: string;
+  chart_kind: string;
+}
+
+export interface FlowLink {
+  id: string;
+  source_id: string;
+  target_id: string;
+  source_col: number;
+  target_col: number;
+  value: number;
+  outcome_kind: FlowOutcomeKind;
+  category_id: string | null;
+  label: string;
+  unit_changed: boolean;
+  conversion_note: string;
+}
+
+export interface ConservationReport {
+  passed: boolean;
+  is_exact_conservation: boolean;
+  unit_conversion_explained: boolean;
+  input_count: number;
+  retained_count: number;
+  excluded_count: number;
+  delta: number;
+  notes: string[];
+}
+
+export interface SemanticDataFlow {
+  status: 'complete' | 'partial' | 'unavailable';
+  unavailable_reason: string | null;
+  record_unit: string;
+  total_input_count: number;
+  total_retained_count: number;
+  total_excluded_count: number;
+  conservation_check: ConservationReport;
+  sources: FlowSourceNode[];
+  categories: FlowCategoryNode[];
+  outcomes: FlowOutcomeNode[];
+  datasets: FlowDatasetNode[];
+  analyses: FlowAnalysisNode[];
+  links: FlowLink[];
+}
+
 export interface LineageGraph {
   artifact_version_id: string;
   generated_at: string;
   nodes: LineageNode[];
   edges: LineageEdge[];
+  lineage_schema_version?: number;
+  semantic_flow?: SemanticDataFlow | null;
 }
 
 export interface RunEvent {
@@ -184,3 +315,56 @@ export interface WorkspaceDetailResponse {
 }
 
 export type DockTab = 'preview' | 'data_map' | 'source';
+
+export type ThinkingEffort = 'low' | 'medium' | 'high';
+
+export interface LLMSettings {
+  configured: boolean;
+  provider: string;
+  base_url: string;
+  model: string;
+  thinking_effort: ThinkingEffort;
+  available_models: string[];
+  api_key_masked: string;
+  has_env_fallback: boolean;
+}
+
+export interface UpdateLLMSettingsPayload {
+  provider: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+  thinking_effort: ThinkingEffort;
+  available_models: string[];
+}
+
+export type TrendingChartIconKind =
+  | 'trend'
+  | 'network'
+  | 'bundling'
+  | 'heatmap'
+  | 'flow'
+  | 'hierarchy'
+  | 'scatter'
+  | 'radial';
+
+export interface TrendingChartItem {
+  id: string;
+  title: string;
+  icon_kind: TrendingChartIconKind;
+  summary: string;
+  interactions: string[];
+  prompt: string;
+  source_label: string;
+  source_url: string;
+  schematic_svg: string;
+}
+
+export interface WeeklyTrendingChartsResponse {
+  iso_week: string;
+  fetched_at: string;
+  expires_at: string;
+  cached: boolean;
+  sources: string[];
+  items: TrendingChartItem[];
+}

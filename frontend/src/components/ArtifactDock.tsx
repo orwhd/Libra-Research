@@ -32,6 +32,7 @@ export const ArtifactDock: React.FC<ArtifactDockProps> = ({
 }) => {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [downloadOpen, setDownloadOpen] = useState(false);
+  const commentSurface = activeTab === 'data_map' ? 'data map' : 'preview';
 
   // Roving tabindex fallback when native CSS/HTML `focusgroup` is unsupported
   useEffect(() => {
@@ -112,8 +113,8 @@ export const ArtifactDock: React.FC<ArtifactDockProps> = ({
             className="dock-icon-btn"
             aria-label={
               pendingCommentsCount > 0
-                ? `Comment on preview (${pendingCommentsCount} pending)`
-                : 'Comment on preview'
+                ? `Comment on ${commentSurface} (${pendingCommentsCount} pending)`
+                : `Comment on ${commentSurface}`
             }
             aria-pressed={commentPinMode}
             onClick={onToggleCommentMode}

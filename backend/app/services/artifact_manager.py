@@ -23,16 +23,20 @@ from ..models import ArtifactVersion, CanvasPosition
 
 
 def make_standalone_html(html_text: str) -> str:
-    """Inline local `/vendor/d3.v7.min.js` so downloaded HTML opens standalone offline."""
-    d3_file = VENDOR_DIR / "d3.v7.min.js"
-    if d3_file.exists():
-        d3_code = d3_file.read_text(encoding="utf-8").replace("</script>", "<\\/script>")
+    """Inline any local `/vendor/*.js` script tags so downloaded HTML opens standalone offline."""
+    if not VENDOR_DIR.exists():
+        return html_text
+    for js_file in sorted(VENDOR_DIR.glob("*.js")):
+        src_path = f"/vendor/{js_file.name}"
+        if src_path not in html_text:
+            continue
+        js_code = js_file.read_text(encoding="utf-8").replace("</script>", "<\\/script>")
         for ref in (
-            '<script src="/vendor/d3.v7.min.js"></script>',
-            "<script src='/vendor/d3.v7.min.js'></script>",
+            f'<script src="{src_path}"></script>',
+            f"<script src='{src_path}'></script>",
         ):
             if ref in html_text:
-                return html_text.replace(ref, f"<script>\n{d3_code}\n</script>")
+                html_text = html_text.replace(ref, f"<script>\n{js_code}\n</script>")
     return html_text
 
 

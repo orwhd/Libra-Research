@@ -262,3 +262,350 @@ def test_submitting_task_attaches_pending_comments_to_user_message(monkeypatch) 
     (RUNTIME_DIR / "lineage" / f"{av_id}.json").unlink(missing_ok=True)
     shutil.rmtree(RUNTIME_DIR / "artifacts" / av_id, ignore_errors=True)
     (RUNTIME_DIR / comment["screenshot_ref"]).unlink(missing_ok=True)
+
+
+def test_llm_api_settings_crud_and_masking(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from openai.resources.models import AsyncModels
+    from app.services.api_settings import SETTINGS_FILE, get_effective_llm_credentials
+
+    client = TestClient(app)
+    had_existing = SETTINGS_FILE.exists()
+    backup_bytes = SETTINGS_FILE.read_bytes() if had_existing else b""
+
+    try:
+        SETTINGS_FILE.unlink(missing_ok=True)
+
+        initial = client.get("/api/settings/llm")
+        assert initial.status_code == 200
+        init_data = initial.json()
+        assert init_data["configured"] is False
+        assert init_data["api_key_masked"] == ""
+        assert init_data["thinking_effort"] == "medium"
+
+        saved = client.put(
+            "/api/settings/llm",
+            json={
+                "provider": "openai",
+                "api_key": "sk-test-secret-12345678abcd",
+                "base_url": "https://api.openai.com/v1/",
+                "model": "gpt-4o-mini",
+                "thinking_effort": "medium",
+                "available_models": ["gpt-4o-mini", "gpt-4o", "o3-mini"],
+            },
+        )
+        assert saved.status_code == 200
+        saved_data = saved.json()
+        assert saved_data["configured"] is True
+        assert saved_data["provider"] == "openai"
+        assert saved_data["base_url"] == "https://api.openai.com/v1"
+        assert saved_data["model"] == "gpt-4o-mini"
+        assert saved_data["thinking_effort"] == "medium"
+        assert saved_data["available_models"] == ["gpt-4o-mini", "gpt-4o", "o3-mini"]
+        assert "12345678abcd" not in saved_data["api_key_masked"]
+        assert saved_data["api_key_masked"].startswith("sk-")
+        assert saved_data["api_key_masked"].endswith("abcd")
+
+        key, base_url, model, effort = get_effective_llm_credentials()
+        assert key == "sk-test-secret-12345678abcd"
+        assert base_url == "https://api.openai.com/v1"
+        assert model == "gpt-4o-mini"
+        assert effort == "medium"
+
+        # Quick selection PATCH updates model and thinking_effort without touching API key
+        quick = client.patch(
+            "/api/settings/llm/selection",
+            json={"model": "o3-mini", "thinking_effort": "high"},
+        )
+        assert quick.status_code == 200
+        quick_data = quick.json()
+        assert quick_data["configured"] is True
+        assert quick_data["model"] == "o3-mini"
+        assert quick_data["thinking_effort"] == "high"
+        assert get_effective_llm_credentials() == (
+            "sk-test-secret-12345678abcd",
+            "https://api.openai.com/v1",
+            "o3-mini",
+            "high",
+        )
+
+        # Updating model without re-entering API key preserves existing saved key & models
+        updated = client.put(
+            "/api/settings/llm",
+            json={
+                "provider": "openai",
+                "api_key": "",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4o",
+                "thinking_effort": "low",
+                "available_models": [],
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["configured"] is True
+        assert updated.json()["model"] == "gpt-4o"
+        assert updated.json()["thinking_effort"] == "low"
+        assert "gpt-4o-mini" in updated.json()["available_models"]
+        assert get_effective_llm_credentials()[0] == "sk-test-secret-12345678abcd"
+
+        # Fetching sk model list returns sorted, deduplicated model IDs
+        async def _fake_list(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(id="gpt-4o"),
+                    SimpleNamespace(id="deepseek-chat"),
+                    SimpleNamespace(id="gpt-4o"),
+                    SimpleNamespace(id="claude-3-7-sonnet"),
+                ]
+            )
+
+        monkeypatch.setattr(AsyncModels, "list", _fake_list)
+        fetched = client.post(
+            "/api/settings/llm/models",
+            json={"api_key": "", "base_url": "https://api.openai.com/v1"},
+        )
+        assert fetched.status_code == 200
+        assert fetched.json() == {
+            "models": ["claude-3-7-sonnet", "deepseek-chat", "gpt-4o"],
+            "count": 3,
+        }
+
+        cleared = client.delete("/api/settings/llm")
+        assert cleared.status_code == 200
+        assert cleared.json()["configured"] is False
+        assert cleared.json()["api_key_masked"] == ""
+    finally:
+        if had_existing:
+            SETTINGS_FILE.write_bytes(backup_bytes)
+        else:
+            SETTINGS_FILE.unlink(missing_ok=True)
+
+
+def test_weekly_trending_charts_cache_and_svg_sanitization(monkeypatch) -> None:
+    from datetime import datetime, timedelta, timezone
+    import json
+
+    from app.services import weekly_trending_charts as wtc
+
+    raw_xss_svg = (
+        '<svg viewBox="0 0 100 100" onclick="alert(1)">'
+        '<defs><linearGradient id="g1"><stop offset="0%" stop-color="#2563eb"/></linearGradient></defs>'
+        '<script>alert("xss")</script>'
+        '<rect x="1" y="1" width="20" height="20" fill="url(#g1)" onload="evil()"/>'
+        '<circle cx="10" cy="10" r="4" fill="#2563eb"/>'
+        '<circle cx="20" cy="20" r="4" fill="#0ea5e9"/>'
+        '<line x1="1" y1="1" x2="20" y2="20" stroke="#0f172a"/>'
+        '<a href="javascript:alert(1)"><text x="10" y="10">bad</text></a>'
+        '</svg>'
+    )
+    sanitized = wtc.sanitize_schematic_svg(raw_xss_svg, "wk_test_1")
+    assert "<script" not in sanitized
+    assert "onclick" not in sanitized
+    assert "onload" not in sanitized
+    assert "javascript:" not in sanitized
+    assert 'id="wk_test_1_g1"' in sanitized
+    assert 'fill="url(#wk_test_1_g1)"' in sanitized
+    assert 'viewBox="0 0 280 124"' in sanitized
+
+    had_existing = wtc.TRENDING_CACHE_FILE.exists()
+    backup_bytes = wtc.TRENDING_CACHE_FILE.read_bytes() if had_existing else b""
+    wtc.TRENDING_CACHE_FILE.unlink(missing_ok=True)
+
+    fetch_calls = 0
+
+    async def _fake_fetch():
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return {
+            "github": [
+                {
+                    "name": "d3/d3",
+                    "description": "Bring data to life",
+                    "stars": 110000,
+                    "topics": ["d3", "visualization"],
+                    "url": "https://github.com/d3/d3",
+                    "pushed_at": "2026-11-20",
+                }
+            ],
+            "openalex": [
+                {
+                    "title": "Interactive Visual Analytics Survey",
+                    "year": 2026,
+                    "citations": 85,
+                    "concepts": ["Visualization"],
+                    "url": "https://openalex.org/W12345",
+                }
+            ],
+            "sources": ["GitHub", "OpenAlex"],
+        }
+
+    async def _fake_synth(signals, iso_week):
+        valid_svg = (
+            '<svg viewBox="0 0 280 124" fill="none">'
+            '<rect x="10" y="10" width="80" height="40" fill="#2563eb"/>'
+            '<circle cx="50" cy="50" r="12" fill="#0ea5e9"/>'
+            '<line x1="10" y1="80" x2="200" y2="80" stroke="#0f172a"/>'
+            '<path d="M 20 90 L 100 30" stroke="#6366f1"/>'
+            "</svg>"
+        )
+        return [
+            {
+                "id": "trend-1",
+                "title": "D3 Multi-Scale Stream",
+                "icon_kind": "trend",
+                "summary": "Real-time stream trend from GitHub & OpenAlex.",
+                "interactions": ["Hover Crosshair", "Brush Zoom", "Metric Toggle"],
+                "prompt": "Build an interactive trend stream chart.",
+                "source_label": "GitHub · d3/d3 ★110k",
+                "source_url": "https://github.com/d3/d3",
+                "schematic_svg": wtc.sanitize_schematic_svg(valid_svg, "t1"),
+            },
+            {
+                "id": "flow-2",
+                "title": "Alluvial Cohort Flow",
+                "icon_kind": "flow",
+                "summary": "Cohort transition flow diagram.",
+                "interactions": ["Path Highlight", "Filter", "Tooltip"],
+                "prompt": "Build an alluvial flow chart.",
+                "source_label": "OpenAlex · Survey",
+                "source_url": "https://openalex.org/W12345",
+                "schematic_svg": "",
+            },
+            {
+                "id": "network-3",
+                "title": "Citation Force Cluster",
+                "icon_kind": "network",
+                "summary": "Community clustering force graph.",
+                "interactions": ["Ego Focus", "Drag", "Tie Filter"],
+                "prompt": "Build a citation force graph.",
+                "source_label": "GitHub · d3/d3 ★110k",
+                "source_url": "https://github.com/d3/d3",
+                "schematic_svg": "",
+            },
+            {
+                "id": "heatmap-4",
+                "title": "Cohort Density Matrix",
+                "icon_kind": "heatmap",
+                "summary": "Sortable matrix heatmap.",
+                "interactions": ["Sort", "Inspect", "Bars"],
+                "prompt": "Build a matrix heatmap.",
+                "source_label": "OpenAlex · Survey",
+                "source_url": "https://openalex.org/W12345",
+                "schematic_svg": "",
+            },
+        ]
+
+    monkeypatch.setattr(wtc, "fetch_live_trending_signals", _fake_fetch)
+    monkeypatch.setattr(wtc, "_synthesize_charts_with_llm", _fake_synth)
+
+    try:
+        client = TestClient(app)
+
+        first = client.get("/api/trending-charts")
+        assert first.status_code == 200
+        d1 = first.json()
+        assert d1["cached"] is False
+        assert len(d1["items"]) == 4
+        assert fetch_calls == 1
+        assert wtc.TRENDING_CACHE_FILE.exists()
+
+        # Second call within 7 days serves strictly from local cache without re-fetching
+        second = client.get("/api/trending-charts")
+        assert second.status_code == 200
+        d2 = second.json()
+        assert d2["cached"] is True
+        assert d2["items"][0]["title"] == "D3 Multi-Scale Stream"
+        assert fetch_calls == 1
+
+        # Simulate >7 days elapsed -> triggers refresh once
+        cached_raw = json.loads(wtc.TRENDING_CACHE_FILE.read_text(encoding="utf-8"))
+        cached_raw["fetched_at"] = (
+            datetime.now(timezone.utc) - timedelta(days=8)
+        ).isoformat()
+        wtc.TRENDING_CACHE_FILE.write_text(
+            json.dumps(cached_raw, ensure_ascii=False), encoding="utf-8"
+        )
+
+        third = client.get("/api/trending-charts")
+        assert third.status_code == 200
+        d3 = third.json()
+        assert d3["cached"] is False
+        assert fetch_calls == 2
+    finally:
+        if had_existing:
+            wtc.TRENDING_CACHE_FILE.write_bytes(backup_bytes)
+        else:
+            wtc.TRENDING_CACHE_FILE.unlink(missing_ok=True)
+
+
+def test_viz_agent_chart_first_and_bottom_dock_safe_zone() -> None:
+    from app.agents.capability_catalog import D3_V7_CAPABILITY_GUIDE
+    from app.agents.visualization_agent import _inject_data_and_bridge
+
+    assert "FIRST in DOM and visual order" in D3_V7_CAPABILITY_GUIDE
+    assert "<canvas>" in D3_V7_CAPABILITY_GUIDE
+    assert "data-rc-chart-stage" in D3_V7_CAPABILITY_GUIDE
+    assert "padding-bottom: 112px" in D3_V7_CAPABILITY_GUIDE
+    assert "position: fixed" in D3_V7_CAPABILITY_GUIDE
+
+    sample_html = (
+        "<!doctype html><html><head><title>Viz</title></head>"
+        '<body><div class="controls">Filter</div><canvas id="main-chart" width="800" height="500"></canvas></body></html>'
+    )
+    injected = _inject_data_and_bridge(sample_html, {"summary": {"headline": "OK"}, "data": [1, 2]})
+    assert "padding-bottom: 112px !important;" in injected
+    assert 'data-rc-chart-first="1"' in injected
+    assert "canvas" in injected
+    assert "data-rc-chart-stage" in injected
+    assert "order: 1 !important;" in injected
+    assert "data-rc-bridge" in injected
+
+
+async def test_llm_client_retries_when_high_reasoning_returns_empty_length_content(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+    from openai.resources.chat.completions import AsyncCompletions
+    import app.agents.llm_client as llm_mod
+
+    monkeypatch.setattr(
+        llm_mod,
+        "get_effective_llm_credentials",
+        lambda: ("sk-test", "https://api.example.com/v1", "deepseek-chat", "high"),
+    )
+
+    seen_efforts: list[str | None] = []
+
+    async def _fake_create(self, **kwargs):
+        effort = kwargs.get("reasoning_effort")
+        seen_efforts.append(effort)
+        user_msg = str(kwargs["messages"][-1]["content"])
+        if effort == "high":
+            partial = "```html\n<!doctype html><html><body><script>const x =" if "html" in user_msg.lower() else ""
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=partial),
+                        finish_reason="length",
+                    )
+                ]
+            )
+        reply = '{"ok": true}' if "json" in user_msg.lower() else "<html>ok</html>"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=reply),
+                    finish_reason="stop",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(AsyncCompletions, "create", _fake_create)
+
+    client = llm_mod.LLMClient()
+    json_res = await client.complete_json("sys", "return json", max_tokens=1024)
+    assert json_res == {"ok": True}
+    text_res = await client.complete_text("sys", "return html", max_tokens=2048)
+    assert text_res == "<html>ok</html>"
+    assert llm_mod.extract_code_block("```html\n<div>hi</div>") == "<div>hi</div>"
+    assert seen_efforts == ["high", "low", "high", "low"]

@@ -1,5 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize2, RotateCcw, Columns2, Eye, Trash2, Check } from 'lucide-react';
+import {
+  Maximize2,
+  Columns2,
+  Trash2,
+  MoveHorizontal,
+  Paperclip,
+} from 'lucide-react';
 import type { ArtifactVersion } from '../types';
 import { CanvasCard } from './CanvasCard';
 
@@ -11,6 +17,8 @@ interface InfiniteCanvasProps {
   onOpenCompare: (leftId: string, rightId: string) => void;
   onMoveVersion: (versionId: string, x: number, y: number, commit: boolean) => void;
   onDeleteVersion?: (versionId: string) => void;
+  onDeleteVersions?: (versionIds: string[]) => void;
+  onAttachToChat?: (versionIds: string[]) => void;
 }
 
 const MOVE_THRESHOLD_PX = 5;
@@ -65,6 +73,8 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   onOpenCompare,
   onMoveVersion,
   onDeleteVersion,
+  onDeleteVersions,
+  onAttachToChat,
 }) => {
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -79,6 +89,18 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     x: number;
     y: number;
     cardId: string | null;
+  } | null>(null);
+  const [isZoomScrubbing, setIsZoomScrubbing] = useState(false);
+  const [zoomAnnouncement, setZoomAnnouncement] = useState('');
+
+  const zoomScrubRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startScale: number;
+    startX: number;
+    startY: number;
+    centerX: number;
+    centerY: number;
   } | null>(null);
 
   const interactionRef = useRef<{
@@ -387,13 +409,122 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
     [versions]
   );
 
-  const compareDisabled = selectedIds.length < 2;
-  const compareReason =
-    selectedIds.length === 0
-      ? 'Right-drag to box-select artifacts'
-      : selectedIds.length === 1
-        ? 'Select at least 2 artifacts to Compare'
-        : 'Open selected artifacts side-by-side';
+  const applyZoomCentered = useCallback(
+    (
+      nextScaleRaw: number,
+      base?: { scale: number; x: number; y: number; centerX: number; centerY: number }
+    ) => {
+      const clampedScale = Math.max(0.25, Math.min(2.5, nextScaleRaw));
+      if (base) {
+        const ratio = clampedScale / base.scale;
+        setTransform({
+          scale: clampedScale,
+          x: base.centerX - (base.centerX - base.x) * ratio,
+          y: base.centerY - (base.centerY - base.y) * ratio,
+        });
+        return clampedScale;
+      }
+      const rect = rootRef.current?.getBoundingClientRect();
+      const centerX = rect ? rect.width / 2 : 480;
+      const centerY = rect ? rect.height / 2 : 320;
+      setTransform((prev) => {
+        const ratio = clampedScale / prev.scale;
+        return {
+          scale: clampedScale,
+          x: centerX - (centerX - prev.x) * ratio,
+          y: centerY - (centerY - prev.y) * ratio,
+        };
+      });
+      return clampedScale;
+    },
+    []
+  );
+
+  const handleZoomPillPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const targetEl = e.target as HTMLElement | null;
+    if (targetEl?.closest('button[data-hud-action="true"]')) {
+      return;
+    }
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const rect = rootRef.current?.getBoundingClientRect();
+    const centerX = rect ? rect.width / 2 : 480;
+    const centerY = rect ? rect.height / 2 : 320;
+
+    zoomScrubRef.current = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startScale: transform.scale,
+      startX: transform.x,
+      startY: transform.y,
+      centerX,
+      centerY,
+    };
+    setIsZoomScrubbing(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore if synthetic event */
+    }
+  };
+
+  const handleZoomPillPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = zoomScrubRef.current;
+    if (!st || st.pointerId !== e.pointerId) return;
+    const dx = e.clientX - st.startClientX;
+    const sensitivity = e.shiftKey ? 0.0018 : 0.0055;
+    const nextScale = st.startScale * Math.exp(dx * sensitivity);
+    applyZoomCentered(nextScale, {
+      scale: st.startScale,
+      x: st.startX,
+      y: st.startY,
+      centerX: st.centerX,
+      centerY: st.centerY,
+    });
+  };
+
+  const finishZoomScrub = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = zoomScrubRef.current;
+    if (!st || st.pointerId !== e.pointerId) return;
+    zoomScrubRef.current = null;
+    setIsZoomScrubbing(false);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      /* ignore */
+    }
+    setZoomAnnouncement(`Canvas zoom ${Math.round(transform.scale * 100)}%`);
+  };
+
+  const handleZoomPillLostCapture = () => {
+    zoomScrubRef.current = null;
+    setIsZoomScrubbing(false);
+  };
+
+  const handleZoomKeyDown = (e: React.KeyboardEvent<HTMLSpanElement>) => {
+    let targetScale: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      targetScale = transform.scale + 0.05;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      targetScale = transform.scale - 0.05;
+    } else if (e.key === 'Home') {
+      targetScale = 0.25;
+    } else if (e.key === 'End') {
+      targetScale = 2.5;
+    } else if (e.key === '0') {
+      targetScale = 1.0;
+    }
+    if (targetScale !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      const applied = applyZoomCentered(targetScale);
+      setZoomAnnouncement(`Canvas zoom ${Math.round(applied * 100)}%`);
+    }
+  };
 
   const gridSize = 24 * transform.scale;
 
@@ -416,42 +547,50 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
         {selectedIds.length > 0 && (
           <div className="canvas-hud-pill">
             <strong>{selectedIds.length} selected</strong>
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ padding: '3px 8px', fontSize: 11.5 }}
-              aria-disabled={compareDisabled ? 'true' : undefined}
-              onClick={() => {
-                if (selectedIds.length >= 2) {
-                  onOpenCompare(selectedIds[0], selectedIds[1]);
-                }
-              }}
-              title={compareReason}
-            >
-              <Columns2 size={13} />
-              Compare
-            </button>
           </div>
         )}
-        <div className="canvas-hud-pill">
-          <span>{Math.round(transform.scale * 100)}%</span>
+        <div
+          className={`canvas-hud-pill canvas-zoom-pill ${isZoomScrubbing ? 'is-scrubbing' : ''}`}
+          onPointerDown={handleZoomPillPointerDown}
+          onPointerMove={handleZoomPillPointerMove}
+          onPointerUp={finishZoomScrub}
+          onPointerCancel={finishZoomScrub}
+          onLostPointerCapture={handleZoomPillLostCapture}
+          title="Drag horizontally to zoom (Shift for fine control, double-click % for 100%)"
+        >
+          <span
+            role="slider"
+            tabIndex={0}
+            className="canvas-zoom-scrub"
+            aria-label="Canvas zoom level. Drag horizontally or use arrow keys to adjust zoom."
+            aria-valuemin={25}
+            aria-valuemax={250}
+            aria-valuenow={Math.round(transform.scale * 100)}
+            aria-valuetext={`${Math.round(transform.scale * 100)}%`}
+            style={
+              {
+                '--zoom-pct': `${Math.max(0, Math.min(100, ((transform.scale - 0.25) / (2.5 - 0.25)) * 100))}%`,
+              } as React.CSSProperties
+            }
+            onKeyDown={handleZoomKeyDown}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              const applied = applyZoomCentered(1.0);
+              setZoomAnnouncement(`Canvas zoom ${Math.round(applied * 100)}%`);
+            }}
+          >
+            <MoveHorizontal size={11} className="canvas-zoom-arrows" aria-hidden="true" />
+            <span className="canvas-zoom-value">{Math.round(transform.scale * 100)}%</span>
+          </span>
           <button
             type="button"
+            data-hud-action="true"
             className="btn-secondary"
             style={{ padding: '3px 8px', fontSize: 11.5 }}
             onClick={fitAll}
           >
             <Maximize2 size={12} />
             Fit All
-          </button>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ padding: '3px 8px', fontSize: 11.5 }}
-            onClick={() => setTransform({ x: 32, y: 32, scale: 1 })}
-          >
-            <RotateCcw size={12} />
-            100%
           </button>
         </div>
       </div>
@@ -521,17 +660,23 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
         />
       )}
 
-      <div className="canvas-hint-bottom">
-        Drag or scroll to pan · ⌘/Ctrl + Wheel to zoom · Right-drag to box-select · Right-click for menu
+      <div className="sr-only" aria-live="polite">
+        {zoomAnnouncement}
       </div>
 
       {contextMenu && (() => {
         const cardId = contextMenu.cardId;
+        const targetIds = cardId
+          ? selectedIds.includes(cardId)
+            ? selectedIds
+            : [cardId]
+          : selectedIds;
+        const canAttach = targetIds.length > 0 && Boolean(onAttachToChat);
         const canComparePair = selectedIds.length >= 2;
         const canCompareWithCard =
           Boolean(cardId) && selectedIds.length === 1 && selectedIds[0] !== cardId;
         const canCompare = canComparePair || canCompareWithCard;
-        const isCardSelected = cardId ? selectedIds.includes(cardId) : false;
+        const canDelete = targetIds.length > 0 && Boolean(onDeleteVersions || onDeleteVersion);
 
         return (
           <div
@@ -544,6 +689,23 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
             onContextMenu={(e) => e.preventDefault()}
           >
             <div className="rc-context-menu-list">
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-context-item"
+                aria-disabled={!canAttach ? 'true' : undefined}
+                onClick={() => {
+                  if (!canAttach || !onAttachToChat) return;
+                  setContextMenu(null);
+                  onAttachToChat(targetIds);
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                  <Paperclip size={14} />
+                  Attach to Chat
+                </span>
+              </button>
+
               <button
                 type="button"
                 role="menuitem"
@@ -563,92 +725,38 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
-                    gap: 6,
+                    gap: 7,
                     color: canCompare ? 'var(--accent)' : 'inherit',
-                    fontWeight: canCompare ? 700 : 500,
+                    fontWeight: canCompare ? 650 : 500,
                   }}
                 >
                   <Columns2 size={14} />
-                  {canComparePair
-                    ? `Compare (${selectedIds.length} selected)`
-                    : canCompareWithCard
-                      ? 'Compare with Selected'
-                      : 'Compare'}
+                  Compare
                 </span>
-                {!canCompare && (
-                  <span className="rc-context-sub">Right-drag to box-select 2+ cards</span>
-                )}
               </button>
 
-              {cardId && (
-                <>
-                  <div className="rc-context-sep" role="separator" />
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="rc-context-item"
-                    onClick={() => {
-                      setContextMenu(null);
-                      onOpenSingle(cardId);
-                    }}
-                  >
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <Eye size={14} />
-                      Open Artifact
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="rc-context-item"
-                    onClick={() => {
-                      setContextMenu(null);
-                      onChangeSelection(
-                        isCardSelected
-                          ? selectedIds.filter((id) => id !== cardId)
-                          : [...selectedIds, cardId]
-                      );
-                    }}
-                  >
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <Check size={14} />
-                      {isCardSelected ? 'Deselect Card' : 'Select Card'}
-                    </span>
-                  </button>
-                  {onDeleteVersion && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="rc-context-item rc-context-danger"
-                      onClick={() => {
-                        setContextMenu(null);
-                        onDeleteVersion(cardId);
-                      }}
-                    >
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <Trash2 size={14} />
-                        Delete Artifact
-                      </span>
-                    </button>
-                  )}
-                </>
-              )}
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-context-item rc-context-danger"
+                aria-disabled={!canDelete ? 'true' : undefined}
+                onClick={() => {
+                  if (!canDelete) return;
+                  setContextMenu(null);
+                  if (onDeleteVersions) {
+                    onDeleteVersions(targetIds);
+                  } else if (onDeleteVersion && targetIds[0]) {
+                    onDeleteVersion(targetIds[0]);
+                  }
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                  <Trash2 size={14} />
+                  Delete
+                </span>
+              </button>
 
               <div className="rc-context-sep" role="separator" />
-
-              {selectedIds.length > 0 && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="rc-context-item"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onChangeSelection([]);
-                  }}
-                >
-                  <span>Clear Selection ({selectedIds.length})</span>
-                </button>
-              )}
 
               <button
                 type="button"
@@ -659,24 +767,9 @@ export const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
                   fitAll();
                 }}
               >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                   <Maximize2 size={14} />
-                  Fit All
-                </span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                className="rc-context-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  setTransform({ x: 32, y: 32, scale: 1 });
-                }}
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <RotateCcw size={14} />
-                  Reset Zoom (100%)
+                  Fit to View
                 </span>
               </button>
             </div>

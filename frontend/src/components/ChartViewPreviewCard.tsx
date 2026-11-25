@@ -1,55 +1,168 @@
-import React, { useId } from 'react';
-
-export type ChartViewId = 'trend' | 'network' | 'bundling' | 'heatmap';
-
-export interface ChartViewItem {
-  id: ChartViewId;
-  title: string;
-  summary: string;
-  interactions: string[];
-  prompt: string;
-}
-
-export const CHART_VIEW_ITEMS: ChartViewItem[] = [
-  {
-    id: 'trend',
-    title: 'Trend & Growth Chart',
-    summary: 'Multi-metric time series with hover crosshair readouts and brush range zoom.',
-    interactions: ['Metric Switch', 'Hover Crosshair', 'Brush Zoom'],
-    prompt:
-      'Visualize temporal trends, growth trajectories, and key inflection points from the data with interactive metric switching and range zoom.',
-  },
-  {
-    id: 'network',
-    title: 'Network & Cluster Graph',
-    summary: 'Force-directed community clusters with ego-neighborhood highlighting and tie filtering.',
-    interactions: ['Ego-Node Hover', 'Drag & Zoom', 'Tie Weight Filter'],
-    prompt:
-      'Construct an interactive force-directed relationship network from the data, highlighting key hubs, community clusters, and connection weights.',
-  },
-  {
-    id: 'bundling',
-    title: 'Hierarchical Bundling',
-    summary: 'Radial taxonomy ring with bundled spline curves revealing cross-group co-occurrence.',
-    interactions: ['Path Highlight', 'Bundle Tension', 'Sector Filter'],
-    prompt:
-      'Build a radial hierarchical taxonomy and edge-bundling view to reveal cross-category structure and co-occurrence links in the data.',
-  },
-  {
-    id: 'heatmap',
-    title: 'Heatmap & Distribution',
-    summary: 'Color-encoded category × time matrix paired with sortable marginal distribution bars.',
-    interactions: ['Sort Matrix', 'Cell Inspector', 'Marginal Bars'],
-    prompt:
-      'Create an interactive category-by-time matrix heatmap and distribution breakdown with sorting, filtering, and detailed hover tooltips.',
-  },
-];
+import React, { useId, useMemo } from 'react';
+import type { TrendingChartIconKind, TrendingChartItem } from '../types';
 
 interface ChartViewPreviewCardProps {
   id: string;
-  item: ChartViewItem;
+  item: TrendingChartItem;
+  isoWeek?: string;
   visible: boolean;
 }
+
+const ALLOWED_SVG_TAGS = new Set([
+  'svg',
+  'g',
+  'path',
+  'circle',
+  'rect',
+  'line',
+  'polyline',
+  'polygon',
+  'ellipse',
+  'text',
+  'tspan',
+  'defs',
+  'linearGradient',
+  'radialGradient',
+  'stop',
+  'clipPath',
+]);
+
+const ALLOWED_ANIM_CLASSES = new Set([
+  'chart-preview-svg',
+  'preview-anim-pulse',
+  'preview-anim-flow',
+  'preview-anim-phase-a',
+  'preview-anim-phase-b',
+]);
+
+const SVG_ATTR_TO_REACT: Record<string, string> = {
+  viewBox: 'viewBox',
+  fill: 'fill',
+  'fill-opacity': 'fillOpacity',
+  stroke: 'stroke',
+  'stroke-width': 'strokeWidth',
+  'stroke-dasharray': 'strokeDasharray',
+  'stroke-dashoffset': 'strokeDashoffset',
+  'stroke-linecap': 'strokeLinecap',
+  'stroke-linejoin': 'strokeLinejoin',
+  'stroke-opacity': 'strokeOpacity',
+  opacity: 'opacity',
+  d: 'd',
+  cx: 'cx',
+  cy: 'cy',
+  r: 'r',
+  rx: 'rx',
+  ry: 'ry',
+  x: 'x',
+  y: 'y',
+  x1: 'x1',
+  y1: 'y1',
+  x2: 'x2',
+  y2: 'y2',
+  width: 'width',
+  height: 'height',
+  points: 'points',
+  transform: 'transform',
+  id: 'id',
+  offset: 'offset',
+  'stop-color': 'stopColor',
+  'stop-opacity': 'stopOpacity',
+  'text-anchor': 'textAnchor',
+  'font-size': 'fontSize',
+  'font-weight': 'fontWeight',
+  'letter-spacing': 'letterSpacing',
+  'clip-path': 'clipPath',
+};
+
+const PRIMITIVE_TAGS = new Set([
+  'path',
+  'circle',
+  'rect',
+  'line',
+  'polyline',
+  'polygon',
+  'ellipse',
+]);
+
+const UNSAFE_SVG_VALUE_RE = /(javascript:|data:|https?:|expression\()/i;
+
+function convertSvgNode(
+  el: Element,
+  key: string,
+  primitiveCounter: { count: number }
+): React.ReactElement | null {
+  const tag = el.tagName;
+  if (!ALLOWED_SVG_TAGS.has(tag)) return null;
+  if (PRIMITIVE_TAGS.has(tag)) primitiveCounter.count += 1;
+
+  const props: Record<string, unknown> = { key };
+  for (const attr of Array.from(el.attributes)) {
+    const val = attr.value.trim();
+    if (!val || UNSAFE_SVG_VALUE_RE.test(val)) continue;
+    if (attr.name === 'class') {
+      const safeClasses = val
+        .split(/\s+/)
+        .filter((tok) => ALLOWED_ANIM_CLASSES.has(tok));
+      if (safeClasses.length > 0) {
+        props.className = safeClasses.join(' ');
+      }
+      continue;
+    }
+    const reactAttr = SVG_ATTR_TO_REACT[attr.name];
+    if (!reactAttr) continue;
+    if (
+      (attr.name === 'fill' || attr.name === 'stroke' || attr.name === 'clip-path') &&
+      /url\(/i.test(val) &&
+      !/^url\(#[A-Za-z0-9_-]+\)$/.test(val)
+    ) {
+      continue;
+    }
+    props[reactAttr] = val;
+  }
+
+  if (tag === 'svg') {
+    props.className = 'chart-preview-svg';
+    props.viewBox = '0 0 280 124';
+    props.fill = 'none';
+    props['aria-hidden'] = true;
+  }
+
+  const children: React.ReactNode[] = [];
+  for (let i = 0; i < el.childNodes.length; i += 1) {
+    const child = el.childNodes[i];
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const converted = convertSvgNode(child as Element, `${key}-${i}`, primitiveCounter);
+      if (converted) children.push(converted);
+    } else if (
+      (tag === 'text' || tag === 'tspan') &&
+      (child.nodeType === Node.TEXT_NODE || child.nodeType === Node.CDATA_SECTION_NODE)
+    ) {
+      if (child.textContent) children.push(child.textContent.slice(0, 80));
+    }
+  }
+
+  return React.createElement(tag, props, ...children);
+}
+
+const SafeSchematicSvg: React.FC<{ svg: string }> = ({ svg }) => {
+  const rendered = useMemo(() => {
+    if (!svg.trim() || typeof DOMParser === 'undefined') return null;
+    try {
+      const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      if (doc.querySelector('parsererror')) return null;
+      const root = doc.documentElement;
+      if (!root || root.tagName.toLowerCase() !== 'svg') return null;
+      const counter = { count: 0 };
+      const el = convertSvgNode(root, 'svg-root', counter);
+      if (!el || counter.count < 4) return null;
+      return el;
+    } catch {
+      return null;
+    }
+  }, [svg]);
+
+  return rendered;
+};
 
 const HEATMAP_MATRIX: number[][] = [
   [0.24, 0.42, 0.68, 0.52, 0.31],
@@ -69,12 +182,7 @@ function heatFill(value: number): string {
 }
 
 const TrendPreviewSvg: React.FC<{ gradId: string }> = ({ gradId }) => (
-  <svg
-    className="chart-preview-svg"
-    viewBox="0 0 280 124"
-    fill="none"
-    aria-hidden="true"
-  >
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
     <defs>
       <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stopColor="#2563eb" stopOpacity="0.24" />
@@ -82,7 +190,6 @@ const TrendPreviewSvg: React.FC<{ gradId: string }> = ({ gradId }) => (
       </linearGradient>
     </defs>
 
-    {/* Gridlines */}
     <g stroke="#e2e8f0" strokeDasharray="3 3" strokeWidth="1">
       <line x1="18" y1="32" x2="262" y2="32" />
       <line x1="18" y1="54" x2="262" y2="54" />
@@ -90,7 +197,6 @@ const TrendPreviewSvg: React.FC<{ gradId: string }> = ({ gradId }) => (
       <line x1="18" y1="98" x2="262" y2="98" />
     </g>
 
-    {/* Mini metric switcher */}
     <rect x="18" y="6" width="94" height="16" rx="8" fill="#ffffff" stroke="#cbd5e1" />
     <rect x="20" y="8" width="44" height="12" rx="6" fill="#eff6ff" />
     <text x="42" y="16.5" textAnchor="middle" fontSize="7.5" fontWeight="700" fill="#2563eb">
@@ -100,7 +206,6 @@ const TrendPreviewSvg: React.FC<{ gradId: string }> = ({ gradId }) => (
       Growth %
     </text>
 
-    {/* Area & Curves */}
     <path
       d="M 22 92 C 44 88, 64 81, 84 76 C 108 70, 132 58, 156 49 C 180 40, 202 30, 224 26 C 238 24, 248 29, 260 34 L 260 100 L 22 100 Z"
       fill={`url(#${gradId})`}
@@ -119,13 +224,11 @@ const TrendPreviewSvg: React.FC<{ gradId: string }> = ({ gradId }) => (
       strokeLinecap="round"
     />
 
-    {/* Bottom brush range window */}
     <rect x="18" y="108" width="244" height="7" rx="3.5" fill="#e2e8f0" />
     <rect x="82" y="108" width="144" height="7" rx="3.5" fill="#93c5fd" />
     <rect x="80" y="106" width="5" height="11" rx="2" fill="#2563eb" />
     <rect x="223" y="106" width="5" height="11" rx="2" fill="#2563eb" />
 
-    {/* Animated hover crosshair steps */}
     <g className="preview-anim-trend-1">
       <line x1="84" y1="24" x2="84" y2="100" stroke="#2563eb" strokeWidth="1.2" strokeDasharray="3 2" />
       <circle cx="84" cy="76" r="4.5" fill="#2563eb" stroke="#ffffff" strokeWidth="1.8" />
@@ -156,19 +259,12 @@ const TrendPreviewSvg: React.FC<{ gradId: string }> = ({ gradId }) => (
 );
 
 const NetworkPreviewSvg: React.FC = () => (
-  <svg
-    className="chart-preview-svg"
-    viewBox="0 0 280 124"
-    fill="none"
-    aria-hidden="true"
-  >
-    {/* Filter badge */}
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
     <rect x="12" y="8" width="54" height="16" rx="8" fill="#ffffff" stroke="#cbd5e1" />
     <text x="39" y="18.5" textAnchor="middle" fontSize="8" fontWeight="600" fill="#475569">
       Ties ≥ 2
     </text>
 
-    {/* Peripheral non-ego edges & nodes */}
     <g className="preview-anim-network-dim">
       <g stroke="#cbd5e1" strokeWidth="1.2">
         <line x1="56" y1="48" x2="88" y2="30" />
@@ -187,7 +283,6 @@ const NetworkPreviewSvg: React.FC = () => (
       <circle cx="134" cy="108" r="4.5" fill="#a5b4fc" />
     </g>
 
-    {/* Ego neighborhood edges (animated pulse brightness) */}
     <g className="preview-anim-ego-edges" stroke="#2563eb" strokeLinecap="round">
       <line x1="136" y1="64" x2="88" y2="30" strokeWidth="2.1" />
       <line x1="136" y1="64" x2="186" y2="34" strokeWidth="2.4" />
@@ -196,7 +291,6 @@ const NetworkPreviewSvg: React.FC = () => (
       <line x1="136" y1="64" x2="48" y2="86" strokeWidth="1.7" />
     </g>
 
-    {/* Direct neighbors + hub */}
     <circle cx="88" cy="30" r="6" fill="#2563eb" />
     <circle cx="48" cy="86" r="5.5" fill="#2563eb" />
     <circle cx="186" cy="34" r="6.5" fill="#0ea5e9" />
@@ -215,7 +309,6 @@ const NetworkPreviewSvg: React.FC = () => (
     />
     <circle cx="136" cy="64" r="8" fill="#2563eb" stroke="#ffffff" strokeWidth="2" />
 
-    {/* Floating inspector chip */}
     <g className="preview-anim-ego-badge">
       <rect x="148" y="42" width="70" height="18" rx="6" fill="#0f172a" />
       <text x="183" y="54" textAnchor="middle" fontSize="8" fontWeight="600" fill="#ffffff">
@@ -226,13 +319,7 @@ const NetworkPreviewSvg: React.FC = () => (
 );
 
 const BundlingPreviewSvg: React.FC = () => (
-  <svg
-    className="chart-preview-svg"
-    viewBox="0 0 280 124"
-    fill="none"
-    aria-hidden="true"
-  >
-    {/* Subtle base bundled chords */}
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
     <g stroke="#cbd5e1" strokeWidth="1" opacity="0.75">
       <path d="M 58 49 Q 96 62 124 34" />
       <path d="M 58 49 Q 96 62 88 100" />
@@ -242,7 +329,6 @@ const BundlingPreviewSvg: React.FC = () => (
       <path d="M 122 89 Q 96 62 59 77" />
     </g>
 
-    {/* Highlighted interactive cross-sector bundle */}
     <g className="preview-anim-bundle-links" strokeWidth="1.9" strokeLinecap="round">
       <path d="M 65 36 Q 96 62 133 50" stroke="#2563eb" />
       <path d="M 65 36 Q 96 62 122 89" stroke="#0ea5e9" />
@@ -250,12 +336,10 @@ const BundlingPreviewSvg: React.FC = () => (
       <path d="M 80 26 Q 96 62 106 99" stroke="#6366f1" />
     </g>
 
-    {/* 3 outer hierarchical sectors */}
     <path d="M 52 50 A 45 45 0 0 1 118 23" stroke="#2563eb" strokeWidth="4.5" strokeLinecap="round" />
     <path d="M 128 30 A 45 45 0 0 1 119 101" stroke="#0ea5e9" strokeWidth="4.5" strokeLinecap="round" />
     <path d="M 108 105 A 45 45 0 0 1 51 62" stroke="#6366f1" strokeWidth="4.5" strokeLinecap="round" />
 
-    {/* Leaf nodes */}
     <g fill="#64748b">
       <circle cx="58" cy="49" r="2.3" />
       <circle cx="102" cy="23" r="2.3" />
@@ -273,7 +357,6 @@ const BundlingPreviewSvg: React.FC = () => (
       <circle cx="106" cy="99" r="3" fill="#6366f1" />
     </g>
 
-    {/* Right-side tension & active bundle panel */}
     <rect x="164" y="22" width="102" height="80" rx="10" fill="#ffffff" stroke="#e2e8f0" />
     <text x="174" y="39" fontSize="8" fontWeight="700" fill="#475569">
       Bundle Tension
@@ -293,19 +376,12 @@ const BundlingPreviewSvg: React.FC = () => (
 );
 
 const HeatmapPreviewSvg: React.FC = () => (
-  <svg
-    className="chart-preview-svg"
-    viewBox="0 0 280 124"
-    fill="none"
-    aria-hidden="true"
-  >
-    {/* Sort chip */}
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
     <rect x="34" y="6" width="54" height="15" rx="7.5" fill="#ffffff" stroke="#cbd5e1" />
     <text x="61" y="16" textAnchor="middle" fontSize="7.5" fontWeight="600" fill="#475569">
       Sort: Peak
     </text>
 
-    {/* Marginal distribution header & baseline bars */}
     <text x="194" y="16" fontSize="7.5" fontWeight="700" fill="#64748b">
       Row Total
     </text>
@@ -314,7 +390,6 @@ const HeatmapPreviewSvg: React.FC = () => (
     <rect x="194" y="66" width="54" height="13" rx="3" fill="#93c5fd" className="preview-anim-bar-r2" />
     <rect x="194" y="86" width="46" height="13" rx="3" fill="#cbd5e1" />
 
-    {/* Row & Col Labels */}
     {['C1', 'C2', 'C3', 'C4'].map((label, rIdx) => (
       <text
         key={label}
@@ -342,7 +417,6 @@ const HeatmapPreviewSvg: React.FC = () => (
       </text>
     ))}
 
-    {/* Matrix Cells */}
     {HEATMAP_MATRIX.map((row, rIdx) =>
       row.map((val, cIdx) => (
         <rect
@@ -357,7 +431,6 @@ const HeatmapPreviewSvg: React.FC = () => (
       ))
     )}
 
-    {/* Animated cell inspector phase 1: C2 x Q4 */}
     <g className="preview-anim-heat-1">
       <rect
         x={34 + 3 * 29 - 1}
@@ -375,7 +448,6 @@ const HeatmapPreviewSvg: React.FC = () => (
       </text>
     </g>
 
-    {/* Animated cell inspector phase 2: C3 x Q2 */}
     <g className="preview-anim-heat-2">
       <rect
         x={34 + 1 * 29 - 1}
@@ -395,9 +467,216 @@ const HeatmapPreviewSvg: React.FC = () => (
   </svg>
 );
 
+const FlowPreviewSvg: React.FC = () => (
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
+    <path
+      d="M 38 30 C 86 30, 92 26, 134 26 L 134 44 C 92 44, 86 46, 38 46 Z"
+      fill="#93c5fd"
+      fillOpacity="0.45"
+    />
+    <path
+      d="M 38 74 C 86 74, 92 84, 134 84 L 134 102 C 92 102, 86 92, 38 92 Z"
+      fill="#c7d2fe"
+      fillOpacity="0.55"
+    />
+    <path
+      d="M 146 66 C 188 66, 198 84, 242 84 L 242 104 C 198 104, 188 86, 146 86 Z"
+      fill="#cbd5e1"
+      fillOpacity="0.5"
+    />
+
+    <g className="preview-anim-flow">
+      <path
+        d="M 38 46 C 84 46, 94 50, 134 50 L 134 72 C 94 72, 84 64, 38 64 Z"
+        fill="#2563eb"
+        fillOpacity="0.34"
+      />
+      <path
+        d="M 146 32 C 190 32, 196 42, 242 42 L 242 66 C 196 66, 190 58, 146 58 Z"
+        fill="#0ea5e9"
+        fillOpacity="0.38"
+      />
+      <path
+        d="M 38 55 C 86 55, 96 61, 134 61"
+        stroke="#2563eb"
+        strokeWidth="2.2"
+        strokeDasharray="6 4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 146 45 C 190 45, 196 54, 242 54"
+        stroke="#0ea5e9"
+        strokeWidth="2.2"
+        strokeDasharray="6 4"
+        strokeLinecap="round"
+      />
+    </g>
+
+    <rect x="26" y="24" width="12" height="42" rx="3" fill="#2563eb" />
+    <rect x="26" y="72" width="12" height="28" rx="3" fill="#6366f1" />
+    <rect x="134" y="22" width="12" height="54" rx="3" fill="#0ea5e9" />
+    <rect x="134" y="82" width="12" height="24" rx="3" fill="#64748b" />
+    <rect x="242" y="34" width="12" height="36" rx="3" fill="#2563eb" />
+    <rect x="242" y="78" width="12" height="28" rx="3" fill="#94a3b8" />
+
+    <rect x="96" y="10" width="88" height="18" rx="6" fill="#0f172a" />
+    <text x="140" y="22" textAnchor="middle" fontSize="8" fontWeight="600" fill="#ffffff">
+      Path · 48.2% share
+    </text>
+  </svg>
+);
+
+const HierarchyPreviewSvg: React.FC = () => (
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
+    <rect x="18" y="12" width="244" height="100" rx="8" fill="#ffffff" stroke="#cbd5e1" />
+    <rect x="24" y="18" width="128" height="88" rx="5" fill="#eff6ff" stroke="#93c5fd" />
+    <rect
+      x="30"
+      y="30"
+      width="68"
+      height="70"
+      rx="4"
+      fill="#2563eb"
+      fillOpacity="0.18"
+      stroke="#2563eb"
+      strokeWidth="1.6"
+      className="preview-anim-pulse"
+    />
+    <rect x="104" y="30" width="42" height="34" rx="4" fill="#60a5fa" fillOpacity="0.35" />
+    <rect x="104" y="68" width="42" height="32" rx="4" fill="#93c5fd" fillOpacity="0.45" />
+
+    <rect x="158" y="18" width="98" height="44" rx="5" fill="#ecfeff" stroke="#7dd3fc" />
+    <rect x="164" y="24" width="46" height="32" rx="3" fill="#0ea5e9" fillOpacity="0.3" />
+    <rect x="214" y="24" width="36" height="32" rx="3" fill="#38bdf8" fillOpacity="0.22" />
+
+    <rect x="158" y="68" width="98" height="38" rx="5" fill="#eef2ff" stroke="#a5b4fc" />
+    <rect x="164" y="74" width="54" height="26" rx="3" fill="#6366f1" fillOpacity="0.25" />
+    <rect x="222" y="74" width="28" height="26" rx="3" fill="#818cf8" fillOpacity="0.2" />
+
+    <rect x="28" y="10" width="76" height="17" rx="6" fill="#0f172a" />
+    <text x="66" y="21.5" textAnchor="middle" fontSize="8" fontWeight="600" fill="#ffffff">
+      Root &gt; Core
+    </text>
+  </svg>
+);
+
+const ScatterPreviewSvg: React.FC = () => (
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
+    <g stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3 3">
+      <line x1="26" y1="30" x2="258" y2="30" />
+      <line x1="26" y1="62" x2="258" y2="62" />
+      <line x1="26" y1="94" x2="258" y2="94" />
+      <line x1="88" y1="16" x2="88" y2="104" />
+      <line x1="168" y1="16" x2="168" y2="104" />
+    </g>
+
+    <rect
+      x="132"
+      y="20"
+      width="88"
+      height="50"
+      rx="9"
+      fill="#2563eb"
+      fillOpacity="0.08"
+      stroke="#2563eb"
+      strokeWidth="1.4"
+      strokeDasharray="4 3"
+      className="preview-anim-pulse"
+    />
+
+    <circle cx="54" cy="82" r="4" fill="#6366f1" fillOpacity="0.7" />
+    <circle cx="70" cy="74" r="5" fill="#6366f1" fillOpacity="0.8" />
+    <circle cx="82" cy="88" r="3.8" fill="#6366f1" fillOpacity="0.7" />
+    <circle cx="98" cy="70" r="4.5" fill="#0ea5e9" fillOpacity="0.75" />
+    <circle cx="116" cy="58" r="4" fill="#0ea5e9" fillOpacity="0.7" />
+
+    <circle cx="148" cy="46" r="5" fill="#2563eb" />
+    <circle cx="164" cy="36" r="6" fill="#2563eb" stroke="#ffffff" strokeWidth="1.5" />
+    <circle cx="178" cy="50" r="4.5" fill="#0ea5e9" />
+    <circle cx="192" cy="32" r="5.5" fill="#2563eb" />
+    <circle cx="206" cy="44" r="4.5" fill="#0ea5e9" />
+    <circle cx="232" cy="72" r="4.5" fill="#94a3b8" />
+
+    <rect x="136" y="76" width="82" height="18" rx="6" fill="#0f172a" />
+    <text x="177" y="88" textAnchor="middle" fontSize="8" fontWeight="600" fill="#ffffff">
+      Cluster B · n=18
+    </text>
+  </svg>
+);
+
+const RadialPreviewSvg: React.FC = () => (
+  <svg className="chart-preview-svg" viewBox="0 0 280 124" fill="none" aria-hidden="true">
+    <g stroke="#cbd5e1" strokeWidth="1">
+      <circle cx="100" cy="64" r="16" strokeDasharray="2 2" />
+      <circle cx="100" cy="64" r="30" strokeDasharray="2 2" />
+      <circle cx="100" cy="64" r="44" />
+      <line x1="100" y1="20" x2="100" y2="108" />
+      <line x1="56" y1="64" x2="144" y2="64" />
+      <line x1="69" y1="33" x2="131" y2="95" />
+      <line x1="131" y1="33" x2="69" y2="95" />
+    </g>
+
+    <polygon
+      points="100,26 128,44 134,76 100,96 72,80 68,46"
+      fill="#2563eb"
+      fillOpacity="0.18"
+      stroke="#2563eb"
+      strokeWidth="2"
+      className="preview-anim-pulse"
+    />
+    <polygon
+      points="100,38 118,52 120,70 100,82 82,70 80,50"
+      fill="#0ea5e9"
+      fillOpacity="0.16"
+      stroke="#0ea5e9"
+      strokeWidth="1.6"
+    />
+    <circle cx="100" cy="26" r="3.5" fill="#2563eb" stroke="#ffffff" strokeWidth="1" />
+    <circle cx="128" cy="44" r="3.5" fill="#2563eb" stroke="#ffffff" strokeWidth="1" />
+    <circle cx="134" cy="76" r="3.5" fill="#0ea5e9" stroke="#ffffff" strokeWidth="1" />
+
+    <rect x="166" y="28" width="96" height="68" rx="10" fill="#ffffff" stroke="#e2e8f0" />
+    <text x="176" y="45" fontSize="8" fontWeight="700" fill="#475569">
+      Polar Score
+    </text>
+    <rect x="176" y="54" width="74" height="5" rx="2.5" fill="#e2e8f0" />
+    <rect x="176" y="54" width="58" height="5" rx="2.5" fill="#2563eb" />
+    <rect x="176" y="68" width="76" height="19" rx="6" fill="#0f172a" />
+    <text x="214" y="80" textAnchor="middle" fontSize="8" fontWeight="600" fill="#ffffff">
+      Index · 84.6
+    </text>
+  </svg>
+);
+
+const BuiltinIconPreview: React.FC<{
+  kind: TrendingChartIconKind;
+  gradId: string;
+}> = ({ kind, gradId }) => {
+  switch (kind) {
+    case 'network':
+      return <NetworkPreviewSvg />;
+    case 'bundling':
+      return <BundlingPreviewSvg />;
+    case 'heatmap':
+      return <HeatmapPreviewSvg />;
+    case 'flow':
+      return <FlowPreviewSvg />;
+    case 'hierarchy':
+      return <HierarchyPreviewSvg />;
+    case 'scatter':
+      return <ScatterPreviewSvg />;
+    case 'radial':
+      return <RadialPreviewSvg />;
+    case 'trend':
+    default:
+      return <TrendPreviewSvg gradId={gradId} />;
+  }
+};
+
 export const ChartViewPreviewCard: React.FC<ChartViewPreviewCardProps> = ({
   id,
   item,
+  isoWeek,
   visible,
 }) => {
   const gradId = useId();
@@ -409,10 +688,10 @@ export const ChartViewPreviewCard: React.FC<ChartViewPreviewCardProps> = ({
       className={`chart-preview-popover ${visible ? 'is-open' : ''}`}
     >
       <div className="chart-preview-stage">
-        {item.id === 'trend' && <TrendPreviewSvg gradId={gradId} />}
-        {item.id === 'network' && <NetworkPreviewSvg />}
-        {item.id === 'bundling' && <BundlingPreviewSvg />}
-        {item.id === 'heatmap' && <HeatmapPreviewSvg />}
+        {item.schematic_svg ? (
+          <SafeSchematicSvg svg={item.schematic_svg} />
+        ) : null}
+        {!item.schematic_svg && <BuiltinIconPreview kind={item.icon_kind} gradId={gradId} />}
       </div>
 
       <div className="chart-preview-body">
@@ -424,6 +703,16 @@ export const ChartViewPreviewCard: React.FC<ChartViewPreviewCardProps> = ({
             </span>
           ))}
         </div>
+        {(isoWeek || item.source_label) && (
+          <div className="chart-preview-meta">
+            {isoWeek && <span className="chart-preview-week">Trending {isoWeek}</span>}
+            {item.source_label && (
+              <span className="chart-preview-source" title={item.source_label}>
+                {item.source_label}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any
 
@@ -23,10 +24,11 @@ from ..services.artifact_manager import (
     list_workspace_artifact_versions,
     save_artifact_version,
 )
+from ..services.browser_validator import await_comment_screenshots
 from ..services.lineage_manager import build_and_persist_lineage
 from .analysis_agent import AnalysisAgent
 from .data_agent import DataAgent
-from .interaction_agent import InteractionAgent
+from .interaction_agent import InteractionAgent, _contains_cjk
 from .llm_client import LLMClient
 from .validation_agent import ValidationAgent
 from .visualization_agent import VisualizationAgent
@@ -224,6 +226,14 @@ class ResearchOrchestrator:
             else _load_pending_comments(workspace_id)
         )
 
+        snap_counts: dict[str, int] = {}
+        with get_conn() as conn:
+            for r in conn.execute(
+                "SELECT snapshot_id, retained_record_count FROM dataset_snapshots WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchall():
+                snap_counts[r["snapshot_id"]] = int(r["retained_record_count"] or 0)
+
         version_summaries = [
             {
                 "artifact_version_id": v.artifact_version_id,
@@ -232,8 +242,25 @@ class ResearchOrchestrator:
                 "chart_kind": v.chart_kind,
                 "version_number": v.version_number,
                 "dataset_snapshot_ids": v.dataset_snapshot_ids,
+                "snapshot_record_counts": [snap_counts.get(sid, 0) for sid in v.dataset_snapshot_ids],
+                "analysis_run_ids": v.analysis_run_ids,
                 "pending_comments": [
-                    {"comment_id": c["comment_id"], "text": c["text"], "anchor": c["anchor"]}
+                    {
+                        "comment_id": c["comment_id"],
+                        "text": c["text"],
+                        "anchor": c["anchor"],
+                        "surface": (
+                            "data_map"
+                            if (((c.get("preview_view_state") or {}).get("filter_state") or {}).get("surface") == "data_map")
+                            else "chart_preview"
+                        ),
+                        "element_hint": c.get("optional_element_hint"),
+                        "nearby_labels": (
+                            ((c.get("preview_view_state") or {}).get("filter_state") or {})
+                            .get("__target_inspector", {})
+                            .get("nearby_labels")
+                        ),
+                    }
                     for c in pending_map.get(v.artifact_version_id, [])
                 ],
             }
@@ -241,32 +268,35 @@ class ResearchOrchestrator:
         ]
 
         planner_system = """
-You are the Orchestrator Agent in WHALES Lab Research Canvas.
-Analyze the user's natural-language request, existing workspace artifacts, and any pending visual comments, and produce a structured execution plan in JSON.
+You are the Orchestrator Agent in Libra Research Canvas.
+Interpret the user's natural-language research or revision request, existing workspace artifacts, and any pending visual comments, and produce a generalizable execution plan in JSON.
 
-Core Rules:
-1. NEVER use hardcoded templates or reject new visualization types. Interpret ANY analytical visualization request (statistical charts, force-directed/node-link networks, hierarchical edge bundling, heatmaps, treemaps, scatter/bubble plots, chord diagrams, etc.) dynamically.
-2. If the user asks for multiple visualizations in one request (e.g. "show AI publication trends, an author collaboration network, and a hierarchical bundled network view"), decompose into separate `tasks` (one per independent interactive HTML artifact) so each becomes its own card stacked vertically.
-3. Revision & Ambiguity Rule (§3.4):
+Core Principles:
+1. ZERO Hardcoded Templates: Interpret ANY analytical domain and visualization requirement dynamically from first principles. Choose complementary, high-signal views suited to the user's research question (keep initial exploratory requests focused to 2-3 high-value interactive artifacts unless the user explicitly asks for a different number).
+2. Independent Canvas Cards: Decompose multi-view requests into separate `tasks` (one per independent interactive HTML artifact).
+3. Revision & Fast Iteration Rules:
    - If the user asks to apply pending comments or revise an existing chart:
      - Check `target_artifact_version_id`, `selected_artifact_version_ids`, explicit title/ID mentions in prompt, and which artifact(s) have `pending_comments`.
-     - If the user says something ambiguous like "revise this chart" or "fix it" when multiple artifacts exist, none is targeted/selected, and either 0 or >1 artifacts have pending comments without clear disambiguation -> set `"action": "clarify"` with a polite `clarification_message` listing the candidate artifacts! NEVER guess randomly.
-   - When revising an existing artifact purely for visual/layout/spacing/labeling/filtering feedback (without changing the underlying year range or dataset population), set `"reuse_dataset_snapshot": true` so Data Map preserves the exact `dataset_snapshot_id`! If the user explicitly asks to change the underlying dataset filter (e.g., restrict to 2021-2025 or different topic), set `"reuse_dataset_snapshot": false`.
+     - If the target is genuinely ambiguous across multiple existing artifacts with no selection or comment disambiguation -> set `"action": "clarify"` with a polite `clarification_message` listing the candidate artifacts.
+   - `reuse_dataset_snapshot`: Set `true` when revising an existing artifact without changing the underlying dataset population/topic/time-window; set `false` if a comment/prompt questions insufficient sample size (check `snapshot_record_counts`!), requests a different filter/time-window, or critiques Data Map source/exclusion rules (`surface == "data_map"`).
+   - `reuse_analysis_run`: Set `true` when `mode == "revise"`, `reuse_dataset_snapshot == true`, and the revision/comments only change visual encoding, layout, styling, colors, labels, tooltips, UI controls, or series visibility without needing new Python statistical/graph metrics; set `false` when comments question computed numbers/aggregations or request new metrics.
 4. Return valid JSON strictly matching:
 {
   "action": "execute" | "clarify",
   "clarification_message": "<only if action == 'clarify'>",
+  "brief_action": "<1 ultra-concise user-facing sentence (<= 25 words / <= 32 Chinese chars) in the user's language stating ONLY what substantive data processing or chart change is being done. NEVER mention snapshots, IDs, caching, reuse, agents, or workflow stages!>",
   "reasoning": "<brief technical rationale>",
   "tasks": [
     {
       "mode": "create" | "revise",
       "parent_version_id": "<existing artifact_version_id if mode=='revise', else null>",
-      "title": "<concise clear artifact title>",
-      "chart_kind": "<descriptive paradigm e.g. 'Interactive Statistical Trend Chart', 'Force-Directed Collaboration Network', 'Hierarchical Edge Bundling Network', 'Topic-by-Year Heatmap'>",
+      "title": "<concise clear artifact title in user's language>",
+      "chart_kind": "<descriptive visualization paradigm>",
       "reuse_dataset_snapshot": true | false,
-      "data_scope": "<exact filtering/cleaning goal on OpenAlex AI works>",
-      "analytical_goal": "<exact statistical/network/hierarchical computation to execute in Python>",
-      "visualization_goal": "<exact D3 v7 visual encoding, layout algorithm, legends, tooltips, and interactive controls>",
+      "reuse_analysis_run": true | false,
+      "data_scope": "<exact domain, entity scope, and filtering criteria>",
+      "analytical_goal": "<exact statistical, temporal, clustering, relational, or distributional computation to execute>",
+      "visualization_goal": "<exact visual encoding, interactive controls, hover details, and layout refinements>",
       "comment_ids_to_address": ["comment_xxx", ...]
     }
   ]
@@ -285,7 +315,7 @@ Core Rules:
             ensure_ascii=False,
             indent=2,
         )
-        return await self.llm.complete_json(planner_system, planner_user, max_tokens=8192)
+        return await self.llm.complete_json(planner_system, planner_user, max_tokens=6144)
 
     async def execute_run(
         self,
@@ -300,8 +330,23 @@ Core Rules:
             for clist in (submitted_comments or {}).values()
             for c in clist
         ]
+        comment_texts = " ".join(
+            str(c.get("text") or "")
+            for clist in (submitted_comments or {}).values()
+            for c in clist
+        )
+        ws_title = ""
+        with get_conn() as conn:
+            ws_row = conn.execute(
+                "SELECT title FROM workspaces WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchone()
+            if ws_row:
+                ws_title = str(ws_row["title"] or "")
+        lang_probe = f"{req.prompt} {comment_texts} {ws_title}".strip()
+        is_cjk = _contains_cjk(lang_probe)
         try:
-            stage_labels = await self.interaction_agent.synthesize_stage_labels(req.prompt, [])
+            initial_plan_label = "解析需求与数据范围" if is_cjk else "Scoping analysis"
             _emit_event(
                 run_id,
                 workspace_id,
@@ -309,20 +354,26 @@ Core Rules:
                 "planning",
                 "running",
                 "Interpreting research intent, workspace context, and pending visual comments...",
-                details={"stream_label": stage_labels["planning"]},
+                details={
+                    "stream_label": initial_plan_label,
+                },
             )
 
-            plan = await self._plan_run(
-                workspace_id, req, pending_override=submitted_comments
+            # Run stage-label synthesis and run-planning concurrently to cut initial latency
+            stage_labels, plan = await asyncio.gather(
+                self.interaction_agent.synthesize_stage_labels(lang_probe or req.prompt, []),
+                self._plan_run(workspace_id, req, pending_override=submitted_comments),
             )
             action = plan.get("action", "execute")
 
             if action == "clarify":
                 _restore_unapplied_comments(submitted_cids)
                 clarification = plan.get("clarification_message") or (
-                    "Could you clarify which artifact you would like me to revise? "
-                    "Please name the chart or select it before sending a revision prompt."
+                    "请说明你希望修改哪一张图表，或在画布中选中目标图表后再发送修改指令。"
+                    if is_cjk
+                    else "Could you clarify which artifact you would like me to revise? Please name the chart or select it before sending a revision prompt."
                 )
+                _add_chat_message(workspace_id, "assistant", clarification, run_id=run_id)
                 _emit_event(
                     run_id,
                     workspace_id,
@@ -332,12 +383,15 @@ Core Rules:
                     "Requested clarification instead of guessing an ambiguous target.",
                     details={"clarification": clarification, "stream_label": stage_labels["completed"]},
                 )
-                _add_chat_message(workspace_id, "assistant", clarification, run_id=run_id)
                 return
 
             planned_tasks: list[dict[str, Any]] = plan.get("tasks") or []
             if not planned_tasks:
                 raise RuntimeError("Orchestrator produced an empty task plan.")
+
+            brief_action = str(plan.get("brief_action") or "").strip()
+            # Scrub any accidental internal ID tokens from brief_action
+            brief_action = re.sub(r"\b(?:ds|ar|av|ws|run)_[A-Za-z0-9]+\b", "", brief_action).strip()
 
             _emit_event(
                 run_id,
@@ -347,7 +401,11 @@ Core Rules:
                 "running",
                 f"Planned {len(planned_tasks)} artifact workflow(s): "
                 + ", ".join(t.get("title", "Artifact") for t in planned_tasks),
-                details={"plan": plan, "stream_label": stage_labels["planning"]},
+                details={
+                    "plan": plan,
+                    "stream_label": stage_labels["planning"],
+                    **({"progress_note": brief_action} if brief_action else {}),
+                },
             )
 
             produced_versions: list[ArtifactVersion] = []
@@ -360,81 +418,151 @@ Core Rules:
             )
             playwright_sem = asyncio.Semaphore(3)
 
-            # Step 1: Prepare DatasetSnapshots sequentially so shared initial tasks reuse cached_group_snapshot
-            cached_group_snapshot: dict[str, Any] | None = None
-            prepared_inputs: list[dict[str, Any]] = []
+            # Step 1: Prepare DatasetSnapshots (sharing a group snapshot across sibling creation tasks, or running distinct scopes concurrently)
+            task_entries: list[dict[str, Any]] = []
+            shared_create_scope: str | None = None
             for idx, task in enumerate(planned_tasks):
                 parent_vid = task.get("parent_version_id")
                 parent_av = get_artifact_version(parent_vid) if parent_vid else None
                 title = task.get("title") or f"Research Artifact {idx + 1}"
                 chart_kind = task.get("chart_kind") or "Interactive Visualization"
-                data_scope = task.get("data_scope") or "All OpenAlex AI works (2018-2025)"
+                data_scope = task.get("data_scope") or req.prompt
 
                 reuse_sid: str | None = None
                 if not req.upload_id and parent_av and task.get("reuse_dataset_snapshot", True):
                     if parent_av.dataset_snapshot_ids:
                         reuse_sid = parent_av.dataset_snapshot_ids[0]
-                elif not parent_av and cached_group_snapshot and len(planned_tasks) > 1:
-                    # Multiple outputs from the same initial query share the verified group snapshot
-                    # unless the task explicitly asks for a narrower subset
-                    reuse_sid = cached_group_snapshot["snapshot_id"]
 
-                _emit_event(
-                    run_id,
-                    workspace_id,
-                    "DataAgent",
-                    "collecting",
-                    "running",
-                    f"[{title}] {'Reusing immutable DatasetSnapshot ' + reuse_sid if reuse_sid else 'Retrieving & transforming OpenAlex records in Python sandbox...'}",
-                    details={"stream_label": stage_labels["collecting"]},
+                if reuse_sid:
+                    group_key = f"reuse:{reuse_sid}"
+                elif not parent_av:
+                    # Sibling exploratory views from one user prompt share one rich multi-miner corpus snapshot
+                    if shared_create_scope is None:
+                        shared_create_scope = data_scope
+                    group_key = "shared_create_corpus"
+                else:
+                    group_key = f"custom:{idx}:{data_scope[:80]}"
+
+                task_entries.append(
+                    {
+                        "idx": idx,
+                        "task": task,
+                        "parent_av": parent_av,
+                        "title": title,
+                        "chart_kind": chart_kind,
+                        "data_scope": shared_create_scope if group_key == "shared_create_corpus" else data_scope,
+                        "reuse_sid": reuse_sid,
+                        "group_key": group_key,
+                    }
                 )
-                try:
-                    snapshot = await self.data_agent.prepare_snapshot(
-                        workspace_id=workspace_id,
-                        data_scope=data_scope,
-                        reuse_snapshot_id=reuse_sid,
-                        upload_id=req.upload_id,
+
+            unique_groups: dict[str, dict[str, Any]] = {}
+            for entry in task_entries:
+                unique_groups.setdefault(entry["group_key"], entry)
+
+            def _make_miner_progress_cb() -> Any:
+                def _cb(summary: str, extra: dict[str, Any]) -> None:
+                    _emit_event(
+                        run_id,
+                        workspace_id,
+                        "MinerCoordinator",
+                        "collecting",
+                        "running",
+                        summary,
+                        details={
+                            **extra,
+                            "stream_label": stage_labels["collecting"],
+                        },
                     )
-                    if not parent_av and not cached_group_snapshot:
-                        cached_group_snapshot = snapshot
+                return _cb
+
+            async def _prepare_group_snapshot(rep_entry: dict[str, Any]) -> tuple[str, dict[str, Any] | None, str | None]:
+                gkey = rep_entry["group_key"]
+                reuse_sid = rep_entry["reuse_sid"]
+                d_scope = rep_entry["data_scope"]
+                t_title = rep_entry["title"]
+
+                if reuse_sid:
                     _emit_event(
                         run_id,
                         workspace_id,
                         "DataAgent",
                         "collecting",
                         "running",
-                        f"[{title}] Snapshot {snapshot['snapshot_id']} ready ({snapshot['retained_record_count']} works, mode={snapshot['retrieval_mode']}).",
+                        f"[{t_title}] Reusing immutable DatasetSnapshot {reuse_sid}",
+                        details={"stream_label": stage_labels["collecting"]},
+                    )
+                else:
+                    _emit_event(
+                        run_id,
+                        workspace_id,
+                        "DataAgent",
+                        "collecting",
+                        "running",
+                        f"[{t_title}] Dispatching parallel Miner Agents & sandbox cleaning...",
+                        details={"stream_label": stage_labels["collecting"]},
+                    )
+
+                try:
+                    snap = await self.data_agent.prepare_snapshot(
+                        workspace_id=workspace_id,
+                        data_scope=d_scope,
+                        reuse_snapshot_id=reuse_sid,
+                        upload_id=req.upload_id,
+                        research_prompt=lang_probe or req.prompt,
+                        on_progress=_make_miner_progress_cb() if not reuse_sid else None,
+                    )
+                    # Encapsulation: NEVER report internal snapshot reuse or internal IDs in chat!
+                    # Only report genuine data cleaning deltas when new data transformation occurred.
+                    snap_note: str | None = None
+                    if not reuse_sid:
+                        raw_cnt = int(snap.get("raw_record_count") or 0)
+                        ret_cnt = int(snap.get("retained_record_count") or 0)
+                        dropped_cnt = max(0, raw_cnt - ret_cnt)
+                        if dropped_cnt > 0:
+                            snap_note = (
+                                f"已完成字段标准化与缺失值过滤，剔除 {dropped_cnt} 条不完整记录，进入统计分析样本共 **{ret_cnt} 条**。"
+                                if is_cjk
+                                else f"Standardized fields and removed {dropped_cnt} incomplete records (**{ret_cnt} valid records** entering analysis)."
+                            )
+                    _emit_event(
+                        run_id,
+                        workspace_id,
+                        "DataAgent",
+                        "collecting",
+                        "running",
+                        f"Snapshot {snap['snapshot_id']} ready ({snap['retained_record_count']} records, mode={snap['retrieval_mode']}).",
                         details={
-                            "snapshot_id": snapshot["snapshot_id"],
-                            "retained_record_count": snapshot["retained_record_count"],
-                            "retrieval_mode": snapshot["retrieval_mode"],
+                            "snapshot_id": snap["snapshot_id"],
+                            "retained_record_count": snap["retained_record_count"],
+                            "retrieval_mode": snap["retrieval_mode"],
                             "stream_label": stage_labels["collecting"],
+                            **({"progress_note": snap_note} if snap_note else {}),
                         },
                     )
-                    prepared_inputs.append(
-                        {
-                            "idx": idx,
-                            "task": task,
-                            "parent_av": parent_av,
-                            "title": title,
-                            "chart_kind": chart_kind,
-                            "snapshot": snapshot,
-                            "error": None,
-                        }
-                    )
+                    return gkey, snap, None
                 except Exception as data_exc:  # noqa: BLE001
-                    err_str = f"{type(data_exc).__name__}: {data_exc}"
-                    prepared_inputs.append(
-                        {
-                            "idx": idx,
-                            "task": task,
-                            "parent_av": parent_av,
-                            "title": title,
-                            "chart_kind": chart_kind,
-                            "snapshot": None,
-                            "error": err_str,
-                        }
-                    )
+                    return gkey, None, f"{type(data_exc).__name__}: {data_exc}"
+
+            group_results = await asyncio.gather(
+                *(_prepare_group_snapshot(rep) for rep in unique_groups.values())
+            )
+            snapshots_by_group = {gk: (snap, err) for gk, snap, err in group_results}
+
+            prepared_inputs: list[dict[str, Any]] = []
+            for entry in task_entries:
+                snap, err = snapshots_by_group[entry["group_key"]]
+                prepared_inputs.append(
+                    {
+                        "idx": entry["idx"],
+                        "task": entry["task"],
+                        "parent_av": entry["parent_av"],
+                        "title": entry["title"],
+                        "chart_kind": entry["chart_kind"],
+                        "snapshot": snap,
+                        "error": err,
+                    }
+                )
 
             # Step 2: Execute Analysis + Visualization + Validation concurrently across tasks
             async def _run_artifact_pipeline(item: dict[str, Any]) -> dict[str, Any]:
@@ -462,30 +590,39 @@ Core Rules:
                         if not target_comments and req.apply_pending_comments:
                             target_comments = all_parent_pending
 
-                    revision_notes = "\n".join(
-                        f"- Comment {c['comment_id']} at {c.get('anchor')}: {c['text']}"
-                        for c in target_comments
-                    )
+                    if target_comments:
+                        await await_comment_screenshots([c["comment_id"] for c in target_comments])
 
-                    _emit_event(
-                        run_id,
-                        workspace_id,
-                        "AnalysisAgent",
-                        "analyzing",
-                        "running",
-                        f"[{title}] Writing & executing Python statistical/network analysis on {snapshot['snapshot_id']}...",
-                        details={"stream_label": stage_labels["analyzing"]},
-                    )
-                    reuse_ar = (
-                        parent_av.analysis_run_ids[0]
-                        if (
-                            parent_av
-                            and parent_av.analysis_run_ids
-                            and task.get("reuse_dataset_snapshot", True)
-                            and not revision_notes
+                    revision_lines: list[str] = []
+                    for c in target_comments:
+                        hint_str = f" | target_element={c.get('optional_element_hint')}" if c.get("optional_element_hint") else ""
+                        insp = (((c.get("preview_view_state") or {}).get("filter_state") or {}).get("__target_inspector") or {})
+                        nearby = insp.get("nearby_labels")
+                        nearby_str = f" | nearby_labels={nearby}" if nearby else ""
+                        revision_lines.append(
+                            f"- Comment {c['comment_id']} at anchor={c.get('anchor')}{hint_str}{nearby_str}: {c['text']}"
                         )
-                        else None
+                    revision_notes = "\n".join(revision_lines)
+
+                    can_reuse_ar = bool(
+                        parent_av
+                        and parent_av.analysis_run_ids
+                        and task.get("reuse_dataset_snapshot", True)
+                        and (task.get("reuse_analysis_run", False) or not revision_notes)
                     )
+                    reuse_ar = parent_av.analysis_run_ids[0] if (can_reuse_ar and parent_av) else None
+
+                    if not reuse_ar:
+                        _emit_event(
+                            run_id,
+                            workspace_id,
+                            "AnalysisAgent",
+                            "analyzing",
+                            "running",
+                            f"[{title}] Executing Python analytical computation on {snapshot['snapshot_id']}...",
+                            details={"stream_label": stage_labels["analyzing"]},
+                        )
+
                     analysis_run = await self.analysis_agent.run_analysis(
                         workspace_id=workspace_id,
                         snapshot=snapshot,
@@ -495,18 +632,22 @@ Core Rules:
                         reuse_analysis_run_id=reuse_ar,
                     )
                     summary_obj = loads(analysis_run.get("summary_json"), {})
+                    headline_txt = str(summary_obj.get("headline") or "").strip()
+                    # Encapsulation: Only surface substantive data findings when new computation ran; never report cached metric reuse!
+                    analysis_note = headline_txt if (not reuse_ar and headline_txt) else None
                     _emit_event(
                         run_id,
                         workspace_id,
                         "AnalysisAgent",
                         "analyzing",
                         "running",
-                        f"[{title}] Analysis {analysis_run['analysis_run_id']} ({analysis_run['analysis_algorithm']}) completed: {summary_obj.get('headline', '')}",
+                        f"[{title}] Analysis {analysis_run['analysis_run_id']} ({analysis_run['analysis_algorithm']}) completed: {headline_txt}",
                         details={
                             "analysis_run_id": analysis_run["analysis_run_id"],
                             "algorithm": analysis_run["analysis_algorithm"],
                             "summary": summary_obj,
                             "stream_label": stage_labels["analyzing"],
+                            **({"progress_note": analysis_note} if analysis_note else {}),
                         },
                     )
 
@@ -534,7 +675,7 @@ Core Rules:
                                 "VisualizationAgent",
                                 "generating_html",
                                 "running",
-                                f"[{title}] Generating interactive D3 v7 HTML visualization...",
+                                f"[{title}] Generating interactive HTML visualization...",
                                 details={"stream_label": stage_labels["generating_html"]},
                             )
                         else:
@@ -572,7 +713,7 @@ Core Rules:
                             "ValidationAgent",
                             "validating",
                             "running",
-                            f"[{title}] Running headless Chromium QA & capturing real preview screenshot...",
+                            f"[{title}] Running headless Chromium QA & capturing preview screenshot...",
                             details={"stream_label": stage_labels["validating"]},
                         )
                         async with playwright_sem:
@@ -590,7 +731,7 @@ Core Rules:
                             workspace_id,
                             "ValidationAgent",
                             "validating",
-                            "retrying" if attempt < MAX_RETRIES else "failed",
+                            "retrying" if attempt < MAX_RETRIES else "running",
                             f"[{title}] Validation failed (attempt {attempt + 1}): {validation_feedback}",
                             error=validation_feedback,
                             details={
@@ -608,7 +749,6 @@ Core Rules:
                             f"[{title}] Failed Validation after {MAX_RETRIES + 1} attempts: {validation_feedback}"
                         )
 
-                    # Persist immediately with deterministic target_row=idx so validated cards stream onto Canvas right away
                     build_and_persist_lineage(
                         artifact_version_id=new_av_id,
                         title=title,
@@ -635,7 +775,7 @@ Core Rules:
                         lineage_ref=f"lineage/{new_av_id}.json",
                         addressed_comment_ids=[c["comment_id"] for c in target_comments],
                         validation_report=val_report,
-                        summary=str(summary_obj.get("headline", "")),
+                        summary=headline_txt,
                         target_row=None if parent_av else idx,
                     )
 
@@ -646,7 +786,9 @@ Core Rules:
                         "validating",
                         "running",
                         f"[{title}] Validated & placed {saved_av.artifact_version_id} (v{saved_av.version_number}) onto Research Canvas.",
-                        details={"stream_label": stage_labels["validating"]},
+                        details={
+                            "stream_label": stage_labels["validating"],
+                        },
                         artifact_refs=[saved_av.artifact_version_id],
                     )
 
@@ -665,14 +807,23 @@ Core Rules:
                 if res.get("error"):
                     err_str = str(res["error"])
                     failures.append(err_str)
+                    # IMPORTANT: Keep run status='running' while synthesizing the final chat message so the chat UI NEVER goes blank!
                     _emit_event(
                         run_id,
                         workspace_id,
                         "Orchestrator",
-                        "failed",
-                        "running" if res["idx"] < len(results) - 1 else "failed",
+                        "validating",
+                        "running",
                         f"[{title}] Artifact execution failed safely (existing versions preserved): {err_str}",
                         error=err_str,
+                        details={
+                            "stream_label": stage_labels.get("summarizing", stage_labels["validating"]),
+                            "progress_note": (
+                                f"《{title}》未通过最终校验（已保留既有版本不受影响），正在汇总其余分析结果。"
+                                if is_cjk
+                                else f"**{title}** did not pass validation (existing canvas versions preserved); wrapping up findings."
+                            ),
+                        },
                     )
                     continue
 
@@ -689,11 +840,24 @@ Core Rules:
                     ),
                 )
 
-            if produced_versions and not failures:
-                reply, follow_up = await self.interaction_agent.synthesize_completion(
-                    user_prompt=req.prompt,
-                    produced_versions=produced_versions,
+            if produced_versions:
+                _emit_event(
+                    run_id,
+                    workspace_id,
+                    "InteractionAgent",
+                    "validating",
+                    "running",
+                    "Synthesizing analytical report and follow-up suggestions...",
+                    details={
+                        "stream_label": stage_labels.get("summarizing", stage_labels["validating"]),
+                    },
                 )
+                reply, follow_up = await self.interaction_agent.synthesize_completion(
+                    user_prompt=lang_probe or req.prompt,
+                    produced_versions=produced_versions,
+                    failures=failures if failures else None,
+                )
+                # Commit assistant message FIRST, BEFORE emitting terminal 'completed' status!
                 _add_chat_message(
                     workspace_id,
                     "assistant",
@@ -708,42 +872,28 @@ Core Rules:
                     "Orchestrator",
                     "completed",
                     "completed",
-                    f"Run completed with {len(produced_versions)} validated artifact(s).",
+                    (
+                        f"Run completed with {len(produced_versions)} validated artifact(s)."
+                        if not failures
+                        else f"Partially completed ({len(produced_versions)} succeeded, {len(failures)} failed)."
+                    ),
                     details={"stream_label": stage_labels["completed"]},
                     artifact_refs=produced_ids,
-                )
-            elif produced_versions and failures:
-                reply, follow_up = await self.interaction_agent.synthesize_completion(
-                    user_prompt=req.prompt,
-                    produced_versions=produced_versions,
-                    failures=failures,
-                )
-                _add_chat_message(
-                    workspace_id,
-                    "assistant",
-                    reply,
-                    run_id=run_id,
-                    artifact_version_ids=produced_ids,
-                    metadata={"follow_up": follow_up},
-                )
-                _emit_event(
-                    run_id,
-                    workspace_id,
-                    "Orchestrator",
-                    "completed",
-                    "completed",
-                    f"Partially completed ({len(produced_versions)} succeeded, {len(failures)} failed).",
-                    details={"stream_label": stage_labels["completed"]},
-                    artifact_refs=produced_ids,
-                    error="; ".join(failures),
+                    error="; ".join(failures) if failures else None,
                 )
             else:
                 _restore_unapplied_comments(submitted_cids)
                 err_msg = "; ".join(failures) or "All artifact tasks failed."
+                fail_reply = (
+                    f"本次运行未能通过图表校验，未发布不合规结果（画布原有版本保持完好）：\n\n{err_msg}"
+                    if is_cjk
+                    else f"Analysis run failed safely without publishing unvalidated outputs (previous versions remain intact):\n\n{err_msg}"
+                )
+                # Commit assistant failure explanation FIRST, BEFORE emitting terminal 'failed' status!
                 _add_chat_message(
                     workspace_id,
                     "assistant",
-                    f"Analysis run failed safely without publishing unvalidated outputs (previous versions remain intact):\n{err_msg}",
+                    fail_reply,
                     run_id=run_id,
                 )
                 _emit_event(
@@ -766,7 +916,11 @@ Core Rules:
             _add_chat_message(
                 workspace_id,
                 "assistant",
-                f"Orchestrator encountered an error (existing canvas artifacts unchanged): {err_msg}",
+                (
+                    f"运行过程中遇到异常（画布已有图表不受影响）：{err_msg}"
+                    if is_cjk
+                    else f"Orchestrator encountered an error (existing canvas artifacts unchanged): {err_msg}"
+                ),
                 run_id=run_id,
             )
             _emit_event(
@@ -779,4 +933,6 @@ Core Rules:
                 error=err_msg,
             )
         finally:
+            # Restore any submitted comment that was not resolved into a validated ArtifactVersion
+            _restore_unapplied_comments(submitted_cids)
             EVENT_BUS.close(run_id)

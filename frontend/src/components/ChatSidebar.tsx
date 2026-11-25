@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  AlertCircle,
   ArrowRight,
   CheckCircle2,
   MessageSquare,
+  Paperclip,
   Plus,
+  X,
 } from 'lucide-react';
 import type {
   ArtifactVersion,
@@ -28,9 +31,12 @@ interface ChatSidebarProps {
   eventsByRun: Record<string, RunEvent[]>;
   artifactVersions: ArtifactVersion[];
   selectedIds: string[];
+  attachedCardIds?: string[];
+  focusComposerSeq?: number;
   submitting: boolean;
   onNewWorkspace: () => void;
   onSubmitPrompt: (prompt: string, uploadId?: string | null) => Promise<void>;
+  onRemoveAttachedCard?: (versionId: string) => void;
   onOpenVersion?: (versionId: string) => void;
 }
 
@@ -39,6 +45,10 @@ interface FollowUpRadioBubbleProps {
   followUp: FollowUpSuggestion;
   submitting: boolean;
   onSelectSubmit: (prompt: string) => Promise<void>;
+}
+
+function hasCjkText(text: string): boolean {
+  return /[\u4e00-\u9fff]/.test(text);
 }
 
 const FollowUpRadioBubble: React.FC<FollowUpRadioBubbleProps> = ({
@@ -136,19 +146,21 @@ const WaveProgressText: React.FC<{ text: string; title?: string }> = ({ text, ti
   }, [text, chars.length]);
 
   return (
-    <span className="wave-progress-text" title={title} aria-label={text}>
-      {chars.map((ch, idx) => (
-        <span
-          key={idx}
-          ref={(el) => {
-            charRefs.current[idx] = el;
-          }}
-          className="wave-char"
-          aria-hidden="true"
-        >
-          {ch}
-        </span>
-      ))}
+    <span className="wave-progress-text" title={title}>
+      <span className="visually-hidden">{text}</span>
+      <span aria-hidden="true">
+        {chars.map((ch, idx) => (
+          <span
+            key={idx}
+            ref={(el) => {
+              charRefs.current[idx] = el;
+            }}
+            className="wave-char"
+          >
+            {ch}
+          </span>
+        ))}
+      </span>
     </span>
   );
 };
@@ -159,13 +171,32 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   runs,
   eventsByRun,
   artifactVersions,
+  attachedCardIds = [],
+  focusComposerSeq = 0,
   submitting,
   onNewWorkspace,
   onSubmitPrompt,
+  onRemoveAttachedCard,
 }) => {
   const [prompt, setPrompt] = useState('');
   const [sendingComments, setSendingComments] = useState(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const att = useAttachmentController(submitting);
+
+  useEffect(() => {
+    if (focusComposerSeq > 0) {
+      composerRef.current?.focus();
+    }
+  }, [focusComposerSeq]);
+
+  const attachedVersions = useMemo(
+    () =>
+      attachedCardIds
+        .map((id) => artifactVersions.find((v) => v.artifact_version_id === id))
+        .filter((v): v is ArtifactVersion => Boolean(v)),
+    [attachedCardIds, artifactVersions]
+  );
 
   const totalPendingComments = artifactVersions.reduce(
     (sum, v) => sum + (v.pending_comment_count || 0),
@@ -193,37 +224,136 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     }
   };
 
-  const runsById = new Map(runs.map((r) => [r.run_id, r]));
+  const runsById = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
+  const assistantRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of messages) {
+      if (m.role === 'assistant' && m.run_id) {
+        ids.add(m.run_id);
+      }
+    }
+    return ids;
+  }, [messages]);
 
-  const renderStreamTrail = (run: TaskRun) => {
-    const isActive =
-      run.status === 'queued' || run.status === 'running' || run.status === 'retrying';
-    if (!isActive) return null;
+  const totalEventCount = useMemo(
+    () => Object.values(eventsByRun).reduce((acc, list) => acc + list.length, 0),
+    [eventsByRun]
+  );
 
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 180) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages.length, totalEventCount]);
+
+  const extractProgressNotes = (run: TaskRun, msg: ChatMessage): string[] => {
     const events = eventsByRun[run.run_id] || [];
-    let latestLabel = '';
-    let latestSummary = '';
+    const notes: string[] = [];
+    const seen = new Set<string>();
+    const plumbingPattern =
+      /\b(?:ds|ar|av|ws|run)_[a-z0-9]+\b|reused immutable|reused computed|miner agent|workspace state to plan|planned targeted revision/i;
 
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const ev = events[i];
-      const rawLabel =
-        typeof ev.details?.stream_label === 'string' ? ev.details.stream_label.trim() : '';
-      if (rawLabel) {
-        latestLabel = rawLabel;
-        latestSummary = ev.concise_summary || rawLabel;
-        break;
+    for (const ev of events) {
+      const rawNote =
+        typeof ev.details?.progress_note === 'string' ? ev.details.progress_note.trim() : '';
+      if (!rawNote || plumbingPattern.test(rawNote)) continue;
+      if (!seen.has(rawNote)) {
+        seen.add(rawNote);
+        notes.push(rawNote);
       }
     }
 
-    const displayText = latestLabel ? `${latestLabel}...` : 'Thinking...';
+    return notes.slice(-3);
+  };
+
+  const renderRunActivityOrFallback = (run: TaskRun, msg: ChatMessage) => {
+    const hasAssistantReply = assistantRunIds.has(run.run_id);
+    if (hasAssistantReply) return null;
+
+    const isActive =
+      run.status === 'queued' || run.status === 'running' || run.status === 'retrying';
+    const events = eventsByRun[run.run_id] || [];
+    const progressNotes = extractProgressNotes(run, msg);
+    const commentTexts = (msg.attached_comments || []).map((c) => c.text).join(' ');
+    const isCjk = hasCjkText(`${msg.content} ${commentTexts} ${workspaceTitle}`);
+
+    if (isActive || run.status === 'completed') {
+      let latestLabel = '';
+      let latestSummary = '';
+
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const ev = events[i];
+        const rawLabel =
+          typeof ev.details?.stream_label === 'string' ? ev.details.stream_label.trim() : '';
+        if (rawLabel) {
+          latestLabel = rawLabel;
+          latestSummary = ev.concise_summary || rawLabel;
+          break;
+        }
+      }
+
+      const defaultTicker = isCjk ? '正在处理数据...' : 'Processing data...';
+      const displayText = latestLabel ? `${latestLabel}...` : defaultTicker;
+      const bodyMarkdown =
+        progressNotes.length === 0
+          ? ''
+          : progressNotes.length === 1
+            ? progressNotes[0]
+            : progressNotes.map((line) => `- ${line}`).join('\n');
+
+      return (
+        <div
+          key={`stream_wrap_${run.run_id}`}
+          className="live-run-progress-group"
+          data-run-id={run.run_id}
+        >
+          {bodyMarkdown && (
+            <div
+              className="msg-bubble msg-assistant live-working-report"
+              role="status"
+              aria-live="polite"
+              aria-atomic="false"
+              data-testid={`live-report-${run.run_id}`}
+            >
+              <div className="markdown-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyMarkdown}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+          <div className="stream-trail is-running" data-testid={`stream-trail-${run.run_id}`}>
+            <WaveProgressText text={displayText} title={latestSummary || displayText} />
+          </div>
+        </div>
+      );
+    }
+
+    // Resilient fallback if a historical or interrupted terminal run lacks a persisted assistant ChatMessage
+    const fallbackError =
+      (run.error_message || '').trim() ||
+      (isCjk
+        ? '该轮分析任务在完成汇总前已中断，画布已有成果均已安全保留，可重新发送指令继续。'
+        : 'This run stopped before posting its final summary; existing canvas artifacts remain intact.');
+    const notesBlock =
+      progressNotes.length > 0 ? `${progressNotes.map((n) => `- ${n}`).join('\n')}\n\n` : '';
 
     return (
       <div
-        key={`stream_${run.run_id}`}
-        className="stream-trail is-running"
-        data-run-id={run.run_id}
+        key={`fallback_msg_${run.run_id}`}
+        className="msg-bubble msg-assistant msg-run-fallback"
+        data-testid={`fallback-reply-${run.run_id}`}
       >
-        <WaveProgressText text={displayText} title={latestSummary || displayText} />
+        <div className="msg-fallback-header">
+          <AlertCircle size={15} className="msg-fallback-icon" aria-hidden="true" />
+          <span>{isCjk ? '运行状态说明' : 'Run Status Notice'}</span>
+        </div>
+        <div className="markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {`${notesBlock}${fallbackError}`}
+          </ReactMarkdown>
+        </div>
       </div>
     );
   };
@@ -240,7 +370,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         </button>
       </header>
 
-      <div className="chat-scroll">
+      <div className="chat-scroll" ref={scrollRef}>
         {messages.map((msg) => {
           const linkedRun = msg.role === 'user' && msg.run_id ? runsById.get(msg.run_id) : undefined;
           return (
@@ -295,23 +425,48 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                   />
                 )}
               </div>
-              {linkedRun && renderStreamTrail(linkedRun)}
+              {linkedRun && renderRunActivityOrFallback(linkedRun, msg)}
             </React.Fragment>
           );
         })}
       </div>
 
       <form className="chat-composer" onSubmit={handleSubmit}>
-        {visiblePendingComments > 0 && (
-          <div className="chat-context-banner">
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <MessageSquare size={12} />
-              {`${visiblePendingComments} comments`}
-            </span>
+        {(visiblePendingComments > 0 || attachedVersions.length > 0) && (
+          <div className="chat-context-banner" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {attachedVersions.map((av) => (
+              <span
+                key={av.artifact_version_id}
+                className="chat-attached-card-chip"
+                title={`${av.title} (v${av.version_number})`}
+              >
+                <Paperclip size={11} aria-hidden="true" />
+                <span className="chat-attached-card-title">
+                  {av.title} (v{av.version_number})
+                </span>
+                {onRemoveAttachedCard && (
+                  <button
+                    type="button"
+                    className="chat-attached-card-remove"
+                    aria-label={`Remove ${av.title} from chat`}
+                    onClick={() => onRemoveAttachedCard(av.artifact_version_id)}
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </span>
+            ))}
+            {visiblePendingComments > 0 && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <MessageSquare size={12} />
+                {`${visiblePendingComments} comments`}
+              </span>
+            )}
           </div>
         )}
 
         <textarea
+          ref={composerRef}
           className="chat-composer-input"
           aria-label="Follow-up prompt"
           placeholder="Ask anything..."
