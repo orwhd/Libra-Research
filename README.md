@@ -15,6 +15,7 @@ Libra Research is a **harness-engineered multi-agent LLM data science applicatio
 ![Project 1 System Architecture](design/project1_system_architecture.png)
 
 - Vector PDF: [`design/project1_system_architecture.pdf`](design/project1_system_architecture.pdf)
+- Editable Vector SVG: [`design/project1_system_architecture.svg`](design/project1_system_architecture.svg)
 - Detailed design & limitations docs: [`docs/implementation_plan.md`](docs/implementation_plan.md) · [`docs/architecture_draft.md`](docs/architecture_draft.md) · [`docs/limitations.md`](docs/limitations.md)
 
 ---
@@ -29,8 +30,8 @@ Libra Research is a **harness-engineered multi-agent LLM data science applicatio
 ### `T1` — Harness-Engineered Multi-Agent Workflow
 - **Orchestration Pipeline**: `Orchestrator` → `MinerCoordinator` / `MinerWorkers` → `DataAgent` + `SemanticProfiler` → `AnalysisAgent` → `VisualizationAgent` → `ValidationAgent` → `InteractionAgent`.
 - **Isolated Python Execution Sandbox (`backend/app/services/sandbox_runner.py`)**: Executes agent-generated preprocessing and statistical Python scripts in `python -I` subprocesses with static AST import/builtin allowlisting, stripped environment variables (`0` API keys), 25-second wall-clock limits, and POSIX `RLIMIT_CPU`/`RLIMIT_FSIZE` bounds.
-- **Bounded Self-Healing QA (`MAX_RETRIES = 2`)**: `ValidationAgent` renders every generated artifact inside headless Chromium, inspects console/page errors, SVG bounding boxes, rendered marks, `NaN` values, and lineage conservation, and loops diagnostic feedback back to `VisualizationAgent` or `AnalysisAgent` automatically.
-- **Immutable Lineage & Streaming**: Persists `DatasetSnapshot`, `AnalysisRun`, and `ArtifactVersion` records in SQLite with real-time SSE `RunEvent` streaming (`POST /api/workspaces/.../chat`).
+- **Bounded Self-Healing QA (`MAX_RETRIES = 2`)**: `ValidationAgent` renders every generated artifact inside headless Chromium, inspects console/page errors, SVG/Canvas bounding boxes, rendered marks, `NaN` values, and lineage conservation, and loops diagnostic feedback back to `VisualizationAgent` automatically (`DataAgent` and `AnalysisAgent` run their own bounded `<= 2` retry loops inside the Python sandbox).
+- **Immutable Lineage & Streaming**: Persists `DatasetSnapshot`, `AnalysisRun`, and `ArtifactVersion` records in SQLite with real-time SSE `RunEvent` streaming (`POST /api/workspaces/{workspace_id}/tasks` + `GET /api/runs/{run_id}/events`).
 
 ### `T2` — Interactive Web Interface & Infinite Research Canvas
 - **Natural-Language Chat & Follow-Up Iteration**: Submit analytical questions, attach uploaded files or existing canvas versions, and issue follow-up refinements that reuse verified snapshots when only visual edits are needed.

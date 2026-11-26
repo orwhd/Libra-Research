@@ -1,0 +1,349 @@
+<svg id="diagram" xmlns="http://www.w3.org/2000/svg" width="1440" height="592" viewBox="0 0 1440 592">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+    .title { font-size: 13px; font-weight: 700; fill: #1e293b; }
+    .sub { font-size: 10.8px; fill: #334155; }
+    .sub-role { font-size: 10.6px; font-weight: 600; fill: #9a3412; }
+    .out { font-size: 10.2px; font-style: italic; font-weight: 500; fill: #2b6cb0; }
+    .sec-label { font-size: 12.5px; font-weight: 700; fill: #64748b; }
+    .mini-lbl { font-size: 9.2px; fill: #475569; }
+  </style>
+  <defs>
+    <marker id="arr-dark" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M0,1.5 L9,5 L0,8.5 z" fill="#1f2937" />
+    </marker>
+    <marker id="arr-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M0,1.5 L9,5 L0,8.5 z" fill="#e0863b" />
+    </marker>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,1.5 L9,5 L0,8.5 z" fill="#5c9b5c" />
+    </marker>
+    <marker id="arr-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M0,1.5 L9,5 L0,8.5 z" fill="#c0392b" />
+    </marker>
+    <marker id="arr-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto">
+      <path d="M0,1.5 L9,5 L0,8.5 z" fill="#8568b8" />
+    </marker>
+  </defs>
+
+  <rect width="1440" height="592" fill="#ffffff" />
+
+  <!-- ================= LEFT COLUMN: USER & DATA SOURCES ================= -->
+  <g>
+    <rect x="16" y="92" width="188" height="96" rx="10" fill="#fdf3d7" stroke="#d4a23e" stroke-width="1.6" />
+    <text x="28" y="115" class="title">User</text>
+    <text x="28" y="138" class="sub">Research question</text>
+    <text x="28" y="156" class="sub">Follow-up &amp; pin comments</text>
+    <text x="28" y="174" class="sub">Uploaded files / URL</text>
+
+    <rect x="16" y="220" width="188" height="114" rx="10" fill="#fdf3d7" stroke="#d4a23e" stroke-width="1.6" />
+    <text x="28" y="243" class="title">Data Sources</text>
+    <text x="28" y="266" class="sub">OpenAlex</text>
+    <text x="28" y="284" class="sub">Local seed</text>
+    <text x="28" y="302" class="sub">Uploads (CSV · JSON · URL)</text>
+  </g>
+
+  <!-- ================= CENTER HARNESS CONTAINER ================= -->
+  <rect x="228" y="56" width="942" height="450" rx="14" fill="#f5f7f9" stroke="#8e98a6" stroke-width="1.6" stroke-dasharray="7 4.5" />
+  <text x="242" y="77" class="sec-label">Harness</text>
+
+  <!-- Top Row: Orchestrator Agent + Interaction Agent -->
+  <g>
+    <rect x="250" y="92" width="648" height="84" rx="10" fill="#fbe2cd" stroke="#e0863b" stroke-width="1.6" />
+    <text x="264" y="115" class="title">Orchestrator Agent</text>
+    <text x="264" y="135" class="sub-role">Plan · Clarify</text>
+    <text x="264" y="152" class="sub">Reuse verified snapshots / analyses or recompute</text>
+    <text x="264" y="168" class="sub">Dispatch parallel multi-view artifact pipelines</text>
+
+    <rect x="920" y="92" width="228" height="84" rx="10" fill="#fbe2cd" stroke="#e0863b" stroke-width="1.6" />
+    <text x="934" y="115" class="title">Interaction Agent</text>
+    <text x="934" y="135" class="sub">Live stage status labels</text>
+    <text x="934" y="151" class="sub">Analytical summary</text>
+    <text x="934" y="167" class="sub">Follow-up next steps</text>
+  </g>
+
+  <!-- Arrow: Orchestrator -> Interaction -> Web Client -->
+  <line x1="898" y1="134" x2="918" y2="134" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+  <line x1="1148" y1="134" x2="1196" y2="134" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+
+  <!-- Orange Dispatch Bus -->
+  <line x1="574" y1="176" x2="574" y2="194" stroke="#e0863b" stroke-width="1.7" />
+  <line x1="333" y1="194" x2="1065" y2="194" stroke="#e0863b" stroke-width="1.7" />
+  <line x1="333" y1="194" x2="333" y2="212" stroke="#e0863b" stroke-width="1.7" marker-end="url(#arr-orange)" />
+  <line x1="516" y1="194" x2="516" y2="212" stroke="#e0863b" stroke-width="1.7" marker-end="url(#arr-orange)" />
+  <line x1="699" y1="194" x2="699" y2="212" stroke="#e0863b" stroke-width="1.7" marker-end="url(#arr-orange)" />
+  <line x1="882" y1="194" x2="882" y2="212" stroke="#e0863b" stroke-width="1.7" marker-end="url(#arr-orange)" />
+  <line x1="1065" y1="194" x2="1065" y2="212" stroke="#e0863b" stroke-width="1.7" marker-end="url(#arr-orange)" />
+
+  <!-- Middle Row: 5 Specialist Agents -->
+  <!-- (1) Miner Agent -->
+  <g>
+    <rect x="250" y="214" width="166" height="132" rx="10" fill="#dfeaf8" stroke="#4a7ab8" stroke-width="1.6" />
+    <text x="262" y="236" class="title">(1) Miner Agent</text>
+    <text x="262" y="264" class="sub">Parallel mining (2–6)</text>
+    <text x="262" y="282" class="sub">Relevance screening</text>
+    <text x="262" y="300" class="sub">Deduplicate shards</text>
+    <text x="262" y="332" class="out">→ Works / records</text>
+  </g>
+
+  <!-- (2) Data Agent -->
+  <g>
+    <rect x="433" y="214" width="166" height="132" rx="10" fill="#dfeaf8" stroke="#4a7ab8" stroke-width="1.6" />
+    <text x="445" y="236" class="title">(2) Data Agent</text>
+    <text x="445" y="264" class="sub">Clean &amp; standardize</text>
+    <text x="445" y="282" class="sub">Semantic profiling</text>
+    <text x="445" y="300" class="sub">Track exclusion rules</text>
+    <text x="445" y="332" class="out">→ DatasetSnapshot</text>
+  </g>
+
+  <!-- (3) Analysis Agent -->
+  <g>
+    <rect x="616" y="214" width="166" height="132" rx="10" fill="#dfeaf8" stroke="#4a7ab8" stroke-width="1.6" />
+    <text x="628" y="236" class="title">(3) Analysis Agent</text>
+    <text x="628" y="264" class="sub">Stats, networks, graphs</text>
+    <text x="628" y="282" class="sub">Compute bespoke metrics</text>
+    <text x="628" y="300" class="sub">Record unit transforms</text>
+    <text x="628" y="332" class="out">→ AnalysisRun</text>
+  </g>
+
+  <!-- (4) Visualization Agent -->
+  <g>
+    <rect x="799" y="214" width="166" height="132" rx="10" fill="#dfeaf8" stroke="#4a7ab8" stroke-width="1.6" />
+    <text x="811" y="236" class="title">(4) Visualization Agent</text>
+    <text x="811" y="264" class="sub">Pick runtime library</text>
+    <text x="811" y="282" class="sub">Write interactive HTML</text>
+    <text x="811" y="300" class="sub">Embed data &amp; pin bridge</text>
+    <text x="811" y="332" class="out">→ Interactive HTML</text>
+  </g>
+
+  <!-- (5) Validation Agent -->
+  <g>
+    <rect x="982" y="214" width="166" height="132" rx="10" fill="#dfeaf8" stroke="#4a7ab8" stroke-width="1.6" />
+    <text x="994" y="236" class="title">(5) Validation Agent</text>
+    <text x="994" y="264" class="sub">Headless browser QA</text>
+    <text x="994" y="282" class="sub">DOM, marks &amp; NaN check</text>
+    <text x="994" y="300" class="sub">Lineage conservation</text>
+    <text x="994" y="332" class="out">→ pass / fail</text>
+  </g>
+
+  <!-- Pipeline data-flow arrows -->
+  <line x1="416" y1="280" x2="431" y2="280" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+  <line x1="599" y1="280" x2="614" y2="280" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+  <line x1="782" y1="280" x2="797" y2="280" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+  <line x1="965" y1="280" x2="980" y2="280" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+
+  <!-- Bottom Row: 4 Infrastructure / Tool Subsystems -->
+  <g>
+    <rect x="250" y="424" width="210" height="68" rx="10" fill="#e2f1df" stroke="#5c9b5c" stroke-width="1.6" />
+    <text x="262" y="444" class="title">State Store</text>
+    <text x="262" y="462" class="sub">SQLite + Artifact Store</text>
+    <text x="262" y="478" class="sub">Snapshots · Runs · Versions</text>
+
+    <rect x="479" y="424" width="210" height="68" rx="10" fill="#e2f1df" stroke="#5c9b5c" stroke-width="1.6" />
+    <text x="491" y="444" class="title">Sandbox</text>
+    <text x="491" y="462" class="sub">Isolated python -I run</text>
+    <text x="491" y="478" class="sub">AST check · error → retry</text>
+
+    <rect x="708" y="424" width="210" height="68" rx="10" fill="#e2f1df" stroke="#5c9b5c" stroke-width="1.6" />
+    <text x="720" y="444" class="title">Catalog</text>
+    <text x="720" y="462" class="sub">Pandas · SciPy · NetworkX</text>
+    <text x="720" y="478" class="sub">D3 · ECharts · Chart.js</text>
+
+    <rect x="937" y="424" width="210" height="68" rx="10" fill="#e2f1df" stroke="#5c9b5c" stroke-width="1.6" />
+    <text x="949" y="444" class="title">Chromium</text>
+    <text x="949" y="462" class="sub">Headless browser QA</text>
+    <text x="949" y="478" class="sub">Previews &amp; pin screenshots</text>
+  </g>
+
+  <!-- Accurate Green Dashed Tool-Call / Store Connectors -->
+  <!-- 1) State Store -> (2) Data, (3) Analysis, (5) Validation / Artifact persist (rail at y=410; NEVER Miner!) -->
+  <path d="M 355 424 L 355 410 L 1054 410" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" />
+  <path d="M 462 410 L 462 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+  <path d="M 642 410 L 642 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+  <path d="M 1054 410 L 1054 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+
+  <!-- 2) Catalog -> (2) Data, (3) Analysis, (4) Visualization (rail at y=396) -->
+  <path d="M 562 396 L 864 396" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" />
+  <path d="M 562 396 L 562 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+  <path d="M 726 416 L 726 404" fill="none" stroke="#f5f7f9" stroke-width="4.5" />
+  <path d="M 726 424 L 726 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+  <path d="M 864 416 L 864 404" fill="none" stroke="#f5f7f9" stroke-width="4.5" />
+  <path d="M 864 424 L 864 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+
+  <!-- 3) Sandbox -> (2) Data, (3) Analysis (straight vertical with crisp halos over rails) -->
+  <path d="M 512 416 L 512 404" fill="none" stroke="#f5f7f9" stroke-width="4.5" />
+  <path d="M 512 424 L 512 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+  <path d="M 678 416 L 678 390" fill="none" stroke="#f5f7f9" stroke-width="4.5" />
+  <path d="M 678 424 L 678 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+
+  <!-- 4) Chromium -> (5) Validation (straight vertical) -->
+  <path d="M 1098 424 L 1098 348" fill="none" stroke="#5c9b5c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+
+  <!-- Bounded Retry Arc: (5) Validation -> (4) Visualization (MAX_RETRIES = 2) -->
+  <path d="M 1014 346 C 1002 380, 948 380, 936 348" fill="none" stroke="#c0392b" stroke-width="1.7" stroke-dasharray="5 3" marker-end="url(#arr-red)" />
+  <rect x="944" y="368" width="62" height="15" rx="4" fill="#f5f7f9" />
+  <text x="975" y="379" text-anchor="middle" font-size="10.2" font-weight="700" fill="#c0392b">retry (≤ 2)</text>
+
+  <!-- Inputs -> Harness -->
+  <line x1="204" y1="140" x2="248" y2="140" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+  <line x1="204" y1="280" x2="248" y2="280" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+
+  <!-- ================= RIGHT COLUMN: WEB CLIENT + GENERATED OUTPUTS ================= -->
+  <g>
+    <rect x="1198" y="56" width="226" height="310" rx="12" fill="#ece3f6" stroke="#8568b8" stroke-width="1.6" />
+    <text x="1311" y="80" text-anchor="middle" class="title" font-size="13.5">Web Client</text>
+
+    <text x="1212" y="106" class="title" font-size="11.5">Infinite Canvas</text>
+    <!-- v1 -> v2 -> v3 -->
+    <rect x="1212" y="116" width="54" height="40" rx="7" fill="#ffffff" stroke="#8568b8" stroke-width="1.3" />
+    <text x="1239" y="140" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e293b">v1</text>
+    <line x1="1266" y1="136" x2="1282" y2="136" stroke="#8568b8" stroke-width="1.4" marker-end="url(#arr-purple)" />
+
+    <rect x="1284" y="116" width="54" height="40" rx="7" fill="#ffffff" stroke="#8568b8" stroke-width="1.3" />
+    <text x="1311" y="140" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e293b">v2</text>
+    <line x1="1338" y1="136" x2="1354" y2="136" stroke="#8568b8" stroke-width="1.4" marker-end="url(#arr-purple)" />
+
+    <rect x="1356" y="116" width="54" height="40" rx="7" fill="#ffffff" stroke="#8568b8" stroke-width="1.3" />
+    <text x="1383" y="140" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e293b">v3</text>
+
+    <text x="1212" y="186" class="title" font-size="11.5">Data Flow Map</text>
+    <!-- 5-Column Semantic Sankey Diagram -->
+    <g transform="translate(1214 200)">
+      <!-- Flow ribbons -->
+      <path d="M 14 14 C 30 14, 32 4, 48 4 L 48 24 C 32 24, 30 34, 14 34 Z" fill="#9f7aea" opacity="0.34" />
+      <path d="M 14 34 C 30 34, 32 32, 48 32 L 48 56 C 32 56, 30 58, 14 58 Z" fill="#9f7aea" opacity="0.34" />
+      <path d="M 14 58 C 30 58, 32 64, 48 64 L 48 80 C 32 80, 30 76, 14 76 Z" fill="#9f7aea" opacity="0.34" />
+
+      <path d="M 60 4 C 76 4, 78 6, 94 6 L 94 34 C 78 34, 76 24, 60 24 Z" fill="#9f7aea" opacity="0.34" />
+      <path d="M 60 32 C 76 32, 78 36, 94 36 L 94 56 C 78 56, 76 52, 60 52 Z" fill="#9f7aea" opacity="0.34" />
+      <path d="M 60 64 C 76 64, 78 66, 94 66 L 94 82 C 78 82, 76 80, 60 80 Z" fill="#9f7aea" opacity="0.34" />
+
+      <path d="M 106 8 C 122 8, 124 18, 140 18 L 140 50 C 124 50, 122 36, 106 36 Z" fill="#9f7aea" opacity="0.34" />
+      <path d="M 106 40 C 122 40, 124 50, 140 50 L 140 70 C 124 70, 122 58, 106 58 Z" fill="#9f7aea" opacity="0.34" />
+
+      <path d="M 152 20 C 166 20, 168 24, 182 24 L 182 64 C 168 64, 166 66, 152 66 Z" fill="#9f7aea" opacity="0.34" />
+
+      <!-- 5 Columns of Sankey Bars -->
+      <rect x="2" y="14" width="12" height="62" rx="2" fill="#8b69b8" />
+      <rect x="48" y="4" width="12" height="22" rx="2" fill="#8b69b8" />
+      <rect x="48" y="32" width="12" height="24" rx="2" fill="#8b69b8" />
+      <rect x="48" y="64" width="12" height="16" rx="2" fill="#8b69b8" />
+
+      <rect x="94" y="6" width="12" height="30" rx="2" fill="#8b69b8" />
+      <rect x="94" y="42" width="12" height="16" rx="2" fill="#8b69b8" />
+      <rect x="94" y="64" width="12" height="18" rx="2" fill="#8b69b8" />
+
+      <rect x="140" y="18" width="12" height="52" rx="2" fill="#8b69b8" />
+      <rect x="182" y="24" width="12" height="40" rx="2" fill="#8b69b8" />
+    </g>
+
+    <text x="1311" y="316" text-anchor="middle" class="sub">Pin comments · Compare</text>
+    <text x="1311" y="336" text-anchor="middle" font-size="9.8" fill="#6b46c1">View Source · HTML / ZIP export</text>
+
+    <!-- Generated outputs box -->
+    <rect x="1198" y="382" width="226" height="124" rx="12" fill="#ffffff" stroke="#8568b8" stroke-width="1.4" stroke-dasharray="5 3.5" />
+    <text x="1311" y="404" text-anchor="middle" class="title" font-size="12">Generated outputs</text>
+
+    <!-- Icon 1: Chart -->
+    <g transform="translate(1210 422)">
+      <rect x="2" y="24" width="8" height="20" rx="1.5" fill="#4a7ab8" />
+      <rect x="13" y="12" width="8" height="32" rx="1.5" fill="#4a7ab8" />
+      <rect x="24" y="18" width="8" height="26" rx="1.5" fill="#4a7ab8" />
+      <rect x="35" y="4" width="8" height="40" rx="1.5" fill="#4a7ab8" />
+      <text x="22" y="64" text-anchor="middle" class="mini-lbl">Chart</text>
+    </g>
+
+    <!-- Icon 2: Network -->
+    <g transform="translate(1265 422)">
+      <line x1="8" y1="26" x2="22" y2="18" stroke="#94a3b8" stroke-width="1.4" />
+      <line x1="22" y1="18" x2="36" y2="10" stroke="#94a3b8" stroke-width="1.4" />
+      <line x1="22" y1="18" x2="28" y2="34" stroke="#94a3b8" stroke-width="1.4" />
+      <line x1="8" y1="26" x2="18" y2="38" stroke="#94a3b8" stroke-width="1.4" />
+      <line x1="18" y1="38" x2="28" y2="34" stroke="#94a3b8" stroke-width="1.4" />
+      <line x1="36" y1="10" x2="40" y2="26" stroke="#94a3b8" stroke-width="1.4" />
+      <circle cx="8" cy="26" r="4" fill="#5c9b5c" />
+      <circle cx="22" cy="18" r="5" fill="#e0863b" />
+      <circle cx="36" cy="10" r="4" fill="#e0863b" />
+      <circle cx="18" cy="38" r="3.8" fill="#5c9b5c" />
+      <circle cx="28" cy="34" r="4.2" fill="#4a7ab8" />
+      <circle cx="40" cy="26" r="3.6" fill="#4a7ab8" />
+      <text x="23" y="64" text-anchor="middle" class="mini-lbl">Network</text>
+    </g>
+
+    <!-- Icon 3: Bundling -->
+    <g transform="translate(1319 422)">
+      <g fill="none" stroke="#c0392b" stroke-width="0.9" opacity="0.65">
+        <path d="M 22 4 Q 22 24, 38 14" />
+        <path d="M 22 4 Q 22 24, 38 34" />
+        <path d="M 6 14 Q 22 24, 38 34" />
+        <path d="M 6 14 Q 22 24, 22 44" />
+        <path d="M 6 34 Q 22 24, 38 14" />
+        <path d="M 6 34 Q 22 24, 22 4" />
+        <path d="M 22 44 Q 22 24, 38 14" />
+        <path d="M 12 7 Q 22 24, 32 41" />
+        <path d="M 32 7 Q 22 24, 12 41" />
+      </g>
+      <circle cx="22" cy="4" r="2.2" fill="#4a7ab8" />
+      <circle cx="32" cy="7" r="2.2" fill="#4a7ab8" />
+      <circle cx="38" cy="14" r="2.2" fill="#4a7ab8" />
+      <circle cx="40" cy="24" r="2.2" fill="#4a7ab8" />
+      <circle cx="38" cy="34" r="2.2" fill="#4a7ab8" />
+      <circle cx="32" cy="41" r="2.2" fill="#4a7ab8" />
+      <circle cx="22" cy="44" r="2.2" fill="#4a7ab8" />
+      <circle cx="12" cy="41" r="2.2" fill="#4a7ab8" />
+      <circle cx="6" cy="34" r="2.2" fill="#4a7ab8" />
+      <circle cx="4" cy="24" r="2.2" fill="#4a7ab8" />
+      <circle cx="6" cy="14" r="2.2" fill="#4a7ab8" />
+      <circle cx="12" cy="7" r="2.2" fill="#4a7ab8" />
+      <text x="22" y="64" text-anchor="middle" class="mini-lbl">Bundling</text>
+    </g>
+
+    <!-- Icon 4: Heatmap -->
+    <g transform="translate(1372 424)">
+      <rect x="0" y="0" width="9" height="9" rx="1" fill="#4a55a2" />
+      <rect x="10.5" y="0" width="9" height="9" rx="1" fill="#6c75bd" />
+      <rect x="21" y="0" width="9" height="9" rx="1" fill="#a5acd9" />
+      <rect x="31.5" y="0" width="9" height="9" rx="1" fill="#d8dcf0" />
+
+      <rect x="0" y="10.5" width="9" height="9" rx="1" fill="#7881c4" />
+      <rect x="10.5" y="10.5" width="9" height="9" rx="1" fill="#4a55a2" />
+      <rect x="21" y="10.5" width="9" height="9" rx="1" fill="#8b93ce" />
+      <rect x="31.5" y="10.5" width="9" height="9" rx="1" fill="#c5cae8" />
+
+      <rect x="0" y="21" width="9" height="9" rx="1" fill="#b4bae1" />
+      <rect x="10.5" y="21" width="9" height="9" rx="1" fill="#7881c4" />
+      <rect x="21" y="21" width="9" height="9" rx="1" fill="#5c66b0" />
+      <rect x="31.5" y="21" width="9" height="9" rx="1" fill="#9ea5d6" />
+
+      <rect x="0" y="31.5" width="9" height="9" rx="1" fill="#e2e5f5" />
+      <rect x="10.5" y="31.5" width="9" height="9" rx="1" fill="#b4bae1" />
+      <rect x="21" y="31.5" width="9" height="9" rx="1" fill="#8b93ce" />
+      <rect x="31.5" y="31.5" width="9" height="9" rx="1" fill="#4a55a2" />
+      <text x="20" y="62" text-anchor="middle" class="mini-lbl">Heatmap</text>
+    </g>
+  </g>
+
+  <!-- Validation Agent -> Web Client -->
+  <line x1="1148" y1="280" x2="1196" y2="280" stroke="#1f2937" stroke-width="1.6" marker-end="url(#arr-dark)" />
+
+  <!-- Top Red Dashed Feedback Loop -->
+  <path d="M 1311 56 L 1311 30 L 674 30 L 674 90" fill="none" stroke="#c0392b" stroke-width="1.7" stroke-dasharray="6 3.5" marker-end="url(#arr-red)" />
+  <text x="992" y="21" text-anchor="middle" font-size="11.2" font-weight="700" fill="#c0392b">Feedback → next version</text>
+
+  <!-- ================= LEGEND & FIGURE CAPTION ================= -->
+  <g transform="translate(290 538)">
+    <line x1="0" y1="0" x2="54" y2="0" stroke="#1f2937" stroke-width="1.7" marker-end="url(#arr-dark)" />
+    <text x="64" y="4" class="sub">data flow</text>
+
+    <line x1="215" y1="0" x2="269" y2="0" stroke="#e0863b" stroke-width="1.7" marker-end="url(#arr-orange)" />
+    <text x="279" y="4" class="sub">dispatch</text>
+
+    <line x1="435" y1="0" x2="489" y2="0" stroke="#5c9b5c" stroke-width="1.7" stroke-dasharray="4 3" marker-end="url(#arr-green)" />
+    <text x="499" y="4" class="sub">tool call</text>
+
+    <line x1="655" y1="0" x2="709" y2="0" stroke="#c0392b" stroke-width="1.7" stroke-dasharray="5 3" marker-end="url(#arr-red)" />
+    <text x="719" y="4" class="sub">retry / feedback</text>
+  </g>
+
+  <text x="720" y="576" text-anchor="middle" font-size="12.5" fill="#1e293b">Figure 1. Libra Research architecture.</text>
+</svg>
