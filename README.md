@@ -4,7 +4,7 @@ Multi-agent LLM framework and interactive web application for end-to-end data an
 
 > The standalone backend for scientific paper reproduction is in [Libra-Reproduce-Backend](https://github.com/orwhd/Libra-Reproduce-Backend). This web app also includes a mode toggle in the home title to preview `Reproduce` mode.
 
-## System Architecture
+## Design
 
 ![Project 1 System Architecture](design/project1_system_architecture.png)
 
