@@ -118,7 +118,7 @@ export const InChatDocumentViewer: React.FC<InChatDocumentViewerProps> = ({
       </div>
 
       <div className="rep-inchat-viewer-body">
-        {loading && <div className="rep-viewer-notice">Loading verified artifact preview…</div>}
+        {loading && <div className="rep-viewer-notice">Loading preview</div>}
         {error && <div className="rep-viewer-notice error">Preview unavailable: {error}</div>}
 
         {!loading && !error && payload && (
@@ -132,7 +132,7 @@ export const InChatDocumentViewer: React.FC<InChatDocumentViewerProps> = ({
                 />
                 <figcaption>
                   {artifact.description || payload.filename} · SHA-256{' '}
-                  <code>{artifact.sha256.slice(0, 16)}…</code>
+                  <code>{artifact.sha256.slice(0, 16)}</code>
                 </figcaption>
               </figure>
             )}

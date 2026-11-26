@@ -48,7 +48,7 @@ test('REG-01 & UI-01 & UI-03 & UI-POP: Homepage switch, 6-role roster, UI cleanu
   // UI cleanup assertions: no Reproduce header pill, no welcome card, placeholder is "Ask anything...", no Pause motion
   await expect(page.locator('.rep-run-badge')).toHaveCount(0);
   await expect(page.getByTestId('reproduce-chat-empty')).toHaveCount(0);
-  await expect(page.getByTestId('reproduce-chat-input')).toHaveAttribute('placeholder', 'Ask anything...');
+  await expect(page.getByTestId('reproduce-chat-input')).toHaveAttribute('placeholder', 'Ask anything');
   await expect(page.getByTestId('toggle-canvas-motion-btn')).toHaveCount(0);
 
   // Data-style horizontal scrub zoom pill + Fit All button must be visible on Canvas
@@ -96,6 +96,7 @@ test('REG-01 & UI-01 & UI-03 & UI-POP: Homepage switch, 6-role roster, UI cleanu
     await expect(node).toBeVisible();
     await expect(node).toHaveAttribute('data-persona-state', 'idle');
   }
+  await expect(page.getByTestId('persona-persona_main')).toContainText('Boss');
 
   // Main in left Boss zone, Specialists on right
   const mainX = Number(await page.getByTestId('persona-persona_main').getAttribute('data-world-x'));
@@ -149,7 +150,7 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
 
   const runId = 'run-e2e-sim';
   const basePersonas = [
-    { persona_id: 'persona_main', role: 'main', label: 'Main', runtime_agent_id: null, state: 'idle', is_main: true, task_ids: [] },
+    { persona_id: 'persona_main', role: 'main', label: 'Boss', runtime_agent_id: null, state: 'idle', is_main: true, task_ids: [] },
     { persona_id: 'persona_paper', role: 'paper', label: 'Paper', runtime_agent_id: null, state: 'idle', is_main: false, task_ids: [] },
     { persona_id: 'persona_data', role: 'data', label: 'Data', runtime_agent_id: null, state: 'idle', is_main: false, task_ids: [] },
     { persona_id: 'persona_analysis', role: 'analysis', label: 'Analysis', runtime_agent_id: 'ag-1', state: 'debating', is_main: false, task_ids: ['t1'] },
@@ -414,7 +415,7 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
         kind: 'message',
         role: 'main',
         created_at: '2026-11-26T10:02:01Z',
-        text: '**Main Agent 诊断说明**：该次运行已由用户手动停止，可继续追问或发送 `重新复现`。',
+        text: '**Boss Agent 诊断说明**：该次运行已由用户手动停止，可继续追问或发送 `重新复现`。',
         related_refs: [{ kind: 'agent', id: 'persona_main' }],
         artifact_ids: [],
         seq: 29,
@@ -575,7 +576,7 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
             duration_sec: 5.0,
             label: 'Validation Brief',
             reason: 'Evidence Gate & Robustness Audit',
-            report: 'Validation presented S1 PASSED Evidence Gate verdict & Round 2 p=0.0049 summary to Main.',
+            report: 'Validation presented S1 PASSED Evidence Gate verdict & Round 2 p=0.0049 summary to Boss.',
             collaboration_id: null,
             briefing_id: 'brief_28',
             participants: ['Validation'],
@@ -589,7 +590,7 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
             presenter_ids: ['persona_validation'],
             presenter_labels: ['Validation'],
             topic: 'Evidence Gate & Robustness Audit',
-            summary: 'Validation presented S1 PASSED Evidence Gate verdict & Round 2 p=0.0049 summary to Main.',
+            summary: 'Validation presented S1 PASSED Evidence Gate verdict & Round 2 p=0.0049 summary to Boss.',
             artifact_ids: ['art-script-1'],
             linked_step_ids: ['step_debate_collab-17'],
           },
@@ -623,7 +624,7 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
               { seq: 2, speaker_id: 'persona_analysis', speaker_label: 'Analysis', stance: 'propose_test', summary: 'Proposed convening Data and running Round 2 ablations & permutation null.' },
               { seq: 3, speaker_id: 'persona_analysis_2', speaker_label: 'Analysis #2', stance: 'report_round2', summary: 'Ablation dropped metric by 0.12; permutation null $p=0.0049$.' },
               { seq: 4, speaker_id: 'persona_analysis_3', speaker_label: 'Analysis #3', stance: 'stress_test', summary: 'Noise sweep retained $92\\%$ effect stability.' },
-              { seq: 5, speaker_id: 'persona_main', speaker_label: 'Main', stance: 'human_guidance', summary: 'Human guidance relayed by Main: Audit paired SE in Round 2.' },
+              { seq: 5, speaker_id: 'persona_main', speaker_label: 'Boss', stance: 'human_guidance', summary: 'Human guidance relayed by Boss: Audit paired SE in Round 2.' },
             ],
           },
         },
@@ -631,8 +632,8 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
           {
             step_id: 'step_main_init',
             status: 'done',
-            actor_label: 'Main agent',
-            text: 'Main agent read uploaded files and dispatched specialists',
+            actor_label: 'Boss agent',
+            text: 'Boss agent read uploaded files and dispatched specialists',
             artifact_ids: [],
             snapshot_seq: 0,
           },
@@ -657,8 +658,8 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
           {
             step_id: 'step_main_summary',
             status: 'done',
-            actor_label: 'Main agent',
-            text: 'Main agent summarized findings, final PDF report & reproducible scripts',
+            actor_label: 'Boss agent',
+            text: 'Boss agent summarized findings, final PDF report & reproducible scripts',
             artifact_ids: ['art-pdf-1', 'art-script-1'],
             snapshot_seq: 4,
           },
@@ -941,6 +942,172 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
   await page.getByTestId('expand-dialogue-popover-btn').click();
   await expect(pop).not.toHaveClass(/is-expanded/);
 
+  // Pin (pushpin) button sits to the left of Expand button; clicking it pins dialogue onto the Infinite Canvas
+  const pinBtn = page.getByTestId('place-dialogue-popover-btn');
+  const expandBtn = page.getByTestId('expand-dialogue-popover-btn');
+  await expect(pinBtn).toBeVisible();
+  await expect(pinBtn).toHaveAttribute('data-icon', 'pin');
+  const pinBox = await pinBtn.boundingBox();
+  const expandBtnBox = await expandBtn.boundingBox();
+  expect(pinBox).not.toBeNull();
+  expect(expandBtnBox).not.toBeNull();
+  expect(pinBox!.x).toBeLessThan(expandBtnBox!.x);
+
+  await pinBtn.click();
+  const placedCard = page.getByTestId('placed-dialogue-card-collab-17');
+  await expect(placedCard).toBeVisible();
+  await expect(page.locator('.rep-placed-cards-layer [data-testid="placed-dialogue-card-collab-17"]')).toHaveCount(1);
+  await expect(page.locator('.rep-composite-group-zone')).toHaveCount(0);
+  const layerOrders = await page.evaluate(() => {
+    const personasEl = document.querySelector('.rep-personas-dom-layer');
+    const cardsEl = document.querySelector('.rep-placed-cards-layer');
+    return {
+      personasZ: personasEl ? Number(getComputedStyle(personasEl).zIndex || 0) : -1,
+      cardsZ: cardsEl ? Number(getComputedStyle(cardsEl).zIndex || 0) : -1,
+    };
+  });
+  expect(layerOrders.cardsZ).toBeGreaterThan(layerOrders.personasZ);
+  // Hovering is no longer needed; moving pointer away keeps placed card visible without opening hover popover
+  await page.mouse.move(20, 20);
+  await expect(placedCard).toBeVisible();
+  await expect(page.getByTestId('table-dialogue-popover')).toHaveCount(0);
+
+  // Clicking active Pin unpins it; hovering or clicking a seated member of the table treats Table + Agents as one entity
+  const unpinBtn = page.getByTestId('unplace-dialogue-card-btn-collab-17');
+  await expect(unpinBtn).toHaveAttribute('data-icon', 'pin');
+  await unpinBtn.click();
+  await expect(placedCard).toHaveCount(0);
+
+  await page.getByTestId('persona-persona_analysis').hover({ force: true });
+  await expect(page.getByTestId('table-dialogue-popover')).toBeVisible();
+
+  // Re-pin dialogue card onto the Infinite Canvas, clear context chip, and click seated member as unified entity
+  await page.getByTestId('place-dialogue-popover-btn').click();
+  await expect(placedCard).toBeVisible();
+  await page.getByRole('button', { name: 'Clear context reference' }).click();
+  await expect(page.getByTestId('selected-context-chip')).toHaveCount(0);
+  await page.getByTestId('persona-persona_analysis').click();
+  await expect(page.getByTestId('selected-context-chip')).toContainText('Table');
+
+  // Pinned card supports free resize on the upper layer WITHOUT colliding with or displacing agents
+  const agentCoordsBeforeResize = await page.locator('.rep-persona-node').evaluateAll((els) =>
+    els.map((el) => ({
+      id: el.getAttribute('data-persona-id'),
+      x: Number(el.getAttribute('data-world-x')),
+      y: Number(el.getAttribute('data-world-y')),
+    }))
+  );
+  const initialCardBox = await placedCard.boundingBox();
+  const resizeGrip = page.getByTestId('resize-placed-card-collab-17');
+  expect(initialCardBox).not.toBeNull();
+  await expect(resizeGrip).toBeVisible();
+  const gripBox = await resizeGrip.boundingBox();
+  expect(gripBox).not.toBeNull();
+  await page.mouse.move(gripBox!.x + gripBox!.width / 2, gripBox!.y + gripBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(gripBox!.x + gripBox!.width / 2 + 115, gripBox!.y + gripBox!.height / 2 + 85, { steps: 6 });
+  await page.mouse.up();
+  const resizedCardBox = await placedCard.boundingBox();
+  expect(resizedCardBox).not.toBeNull();
+  expect(resizedCardBox!.width).toBeGreaterThan(initialCardBox!.width + 60);
+  expect(resizedCardBox!.height).toBeGreaterThan(initialCardBox!.height + 45);
+  expect(Math.abs(resizedCardBox!.x - initialCardBox!.x)).toBeLessThanOrEqual(4);
+
+  const agentCoordsAfterResize = await page.locator('.rep-persona-node').evaluateAll((els) =>
+    els.map((el) => ({
+      id: el.getAttribute('data-persona-id'),
+      x: Number(el.getAttribute('data-world-x')),
+      y: Number(el.getAttribute('data-world-y')),
+    }))
+  );
+  expect(agentCoordsAfterResize).toEqual(agentCoordsBeforeResize);
+  await assertAllAgentsSeparated();
+
+  // Timeline drag 1: single agent (persona_paper) can be dragged individually
+  const paperEl = page.getByTestId('persona-persona_paper');
+  const paperBeforeX = Number(await paperEl.getAttribute('data-world-x'));
+  const paperBeforeY = Number(await paperEl.getAttribute('data-world-y'));
+  const paperBox = await paperEl.boundingBox();
+  expect(paperBox).not.toBeNull();
+  await page.mouse.move(paperBox!.x + paperBox!.width / 2, paperBox!.y + paperBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(paperBox!.x + paperBox!.width / 2 - 90, paperBox!.y + paperBox!.height / 2 - 45, { steps: 6 });
+  await page.mouse.up();
+  const paperAfterX = Number(await paperEl.getAttribute('data-world-x'));
+  const paperAfterY = Number(await paperEl.getAttribute('data-world-y'));
+  expect(Math.hypot(paperAfterX - paperBeforeX, paperAfterY - paperBeforeY)).toBeGreaterThan(25);
+
+  // Timeline drag 2: dragging a seated member inside a cluster drags the ENTIRE cluster rigidly (table + all 5 members)
+  const podMembers = ['persona_analysis', 'persona_validation', 'persona_data', 'persona_analysis_2', 'persona_data_2'];
+  const getPodSnapshot = async () => {
+    const members = await Promise.all(
+      podMembers.map(async (pid) => {
+        const el = page.getByTestId(`persona-${pid}`);
+        return {
+          pid,
+          x: Number(await el.getAttribute('data-world-x')),
+          y: Number(await el.getAttribute('data-world-y')),
+        };
+      })
+    );
+    const tblBox = await page.getByTestId('research-table-path-collab-17').boundingBox();
+    return { members, tblBox };
+  };
+  const podBefore = await getPodSnapshot();
+  // Pick a cluster member whose center is not covered by the upper-layer pinned card
+  const finalCardBox = await placedCard.boundingBox();
+  let dragHandleBox: { x: number; y: number; width: number; height: number } | null = null;
+  for (const pid of podMembers) {
+    const box = await page.getByTestId(`persona-${pid}`).boundingBox();
+    if (!box) continue;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const occluded =
+      finalCardBox &&
+      cx >= finalCardBox.x - 4 &&
+      cx <= finalCardBox.x + finalCardBox.width + 4 &&
+      cy >= finalCardBox.y - 4 &&
+      cy <= finalCardBox.y + finalCardBox.height + 4;
+    if (!occluded) {
+      dragHandleBox = box;
+      break;
+    }
+  }
+  expect(dragHandleBox).not.toBeNull();
+  await page.mouse.move(dragHandleBox!.x + dragHandleBox!.width / 2, dragHandleBox!.y + dragHandleBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(dragHandleBox!.x + dragHandleBox!.width / 2 - 75, dragHandleBox!.y + dragHandleBox!.height / 2 + 55, { steps: 6 });
+  await page.mouse.up();
+  const podAfter = await getPodSnapshot();
+  const deltaAnalysisX = podAfter.members[0].x - podBefore.members[0].x;
+  const deltaAnalysisY = podAfter.members[0].y - podBefore.members[0].y;
+  expect(Math.hypot(deltaAnalysisX, deltaAnalysisY)).toBeGreaterThan(20);
+  for (let m = 1; m < podMembers.length; m += 1) {
+    const dx = podAfter.members[m].x - podBefore.members[m].x;
+    const dy = podAfter.members[m].y - podBefore.members[m].y;
+    expect(Math.abs(dx - deltaAnalysisX), `${podMembers[m]} dx matched cluster`).toBeLessThanOrEqual(4);
+    expect(Math.abs(dy - deltaAnalysisY), `${podMembers[m]} dy matched cluster`).toBeLessThanOrEqual(4);
+  }
+  expect(Math.hypot(podAfter.tblBox!.x - podBefore.tblBox!.x, podAfter.tblBox!.y - podBefore.tblBox!.y)).toBeGreaterThan(15);
+  const paperBeforeSwitchX = Number(await paperEl.getAttribute('data-world-x'));
+
+  // Snapshot drag history persists per timeline snapshot: switch away and back -> restores pinned resized card & dragged positions
+  await expect(page.getByTestId('timeline-snap-snap_expand_5p')).toHaveAttribute('data-drag-count', '6');
+  await expect(page.getByTestId('timeline-undo-drag-btn')).toBeVisible();
+  await page.getByTestId('timeline-snap-snap_end_collab_17').click();
+  await expect(page.getByTestId('placed-dialogue-card-collab-17')).toHaveCount(0);
+  await page.getByTestId('timeline-snap-snap_expand_5p').click();
+  await expect(page.getByTestId('placed-dialogue-card-collab-17')).toBeVisible();
+  const restoredCardBox = await placedCard.boundingBox();
+  expect(restoredCardBox!.width).toBeGreaterThan(initialCardBox!.width + 60);
+  expect(Number(await page.getByTestId('persona-persona_paper').getAttribute('data-world-x'))).toBe(paperBeforeSwitchX);
+  expect(Number(await page.getByTestId('persona-persona_analysis').getAttribute('data-world-x'))).toBe(podAfter.members[0].x);
+
+  // Undo restores previous cluster position cleanly
+  await page.getByTestId('timeline-undo-drag-btn').click();
+  expect(Number(await page.getByTestId('persona-persona_analysis').getAttribute('data-world-x'))).toBe(podBefore.members[0].x);
+  await expect(page.getByTestId('timeline-snap-snap_expand_5p')).toHaveAttribute('data-drag-count', '5');
+
   // Step 3: 3 simultaneous collaborations -> at most 2 visible non-overlapping tables, all 9 personas rendered
   await page.getByTestId('timeline-snap-snap_multi_3t').click();
   await expect(page.locator('.rep-table-group')).toHaveCount(2);
@@ -985,11 +1152,32 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
   await expect(briefPop).toBeVisible();
   await expect(briefPop).toContainText('Evidence Gate & Robustness Audit');
   await expect(briefPop).toContainText('Validation presented S1 PASSED Evidence Gate verdict');
+  await expect(page.getByTestId('place-briefing-popover-btn')).toHaveAttribute('data-icon', 'pin');
   await briefPop.hover();
   await expect(briefPop).toBeVisible();
 
   await easelEl.click({ force: true });
   expect(writeRequestsDuringBriefing).toEqual([]);
+
+  // Composite PPT Whiteboard + Agent Group interaction: hovering presenter opens briefing popover; dragging presenter moves Main + Validation + Easel together
+  await page.mouse.move(20, 20);
+  await expect(briefPop).toHaveCount(0);
+  await page.getByTestId('persona-persona_validation').hover({ force: true });
+  await expect(briefPop).toBeVisible();
+  const briefBoxBefore = await easelEl.boundingBox();
+  const valBriefBox = await page.getByTestId('persona-persona_validation').boundingBox();
+  expect(briefBoxBefore).not.toBeNull();
+  expect(valBriefBox).not.toBeNull();
+  await page.mouse.move(valBriefBox!.x + valBriefBox!.width / 2, valBriefBox!.y + valBriefBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(valBriefBox!.x + valBriefBox!.width / 2 + 70, valBriefBox!.y + valBriefBox!.height / 2 + 45, { steps: 6 });
+  await page.mouse.up();
+  const mainAfterBriefDrag = Number(await page.getByTestId('persona-persona_main').getAttribute('data-world-x'));
+  const valAfterBriefDrag = Number(await page.getByTestId('persona-persona_validation').getAttribute('data-world-x'));
+  const briefBoxAfter = await easelEl.boundingBox();
+  expect(mainAfterBriefDrag - mainXAtBrief).toBeGreaterThan(25);
+  expect(Math.abs((valAfterBriefDrag - valXAtBrief) - (mainAfterBriefDrag - mainXAtBrief))).toBeLessThanOrEqual(4);
+  expect(briefBoxAfter!.x - briefBoxBefore!.x).toBeGreaterThan(20);
 
   // Left-aligned vertical spine renders with green `N files` pill expanding inline + final PDF & scripts
   await expect(page.getByTestId('chat-vertical-timeline')).toBeVisible();
@@ -1001,14 +1189,14 @@ test('UI-04..UI-10: Dynamic multi-instance agents, 2->3->5 morphing without remo
 
   await page.getByTestId('timeline-return-live-btn').click();
 
-  // Follow-up question to Main Agent appends chronologically at bottom BELOW deliverables
-  const chatInput = page.getByRole('textbox', { name: 'Research command or question for Main Agent' });
+  // Follow-up question to Boss Agent appends chronologically at bottom BELOW deliverables
+  const chatInput = page.getByRole('textbox', { name: 'Research command or question for Boss Agent' });
   await chatInput.fill('为什么失败了');
-  await page.getByRole('button', { name: 'Send command to Main Agent' }).click();
+  await page.getByRole('button', { name: 'Send command to Boss Agent' }).click();
   const followUser = page.getByTestId('followup-msg-user');
   const followMain = page.getByTestId('followup-msg-main');
   await expect(followUser).toContainText('为什么失败了');
-  await expect(followMain).toContainText('Main Agent 诊断说明');
+  await expect(followMain).toContainText('Boss Agent 诊断说明');
   const artifactCardsBox = await page.getByTestId('chat-artifact-cards').boundingBox();
   const followUserBox = await followUser.boundingBox();
   const followMainBox = await followMain.boundingBox();

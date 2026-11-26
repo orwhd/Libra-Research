@@ -66,7 +66,7 @@ def main() -> None:
     validate(snapshot, schemas['canvas-projection.schema.json'])
     assert len(snapshot['personas']) == 6
     assert len([p for p in snapshot['personas'] if p['is_main']]) == 1
-    print('[PASS] six-person initial roster projection with one Main')
+    print('[PASS] six-person initial roster projection with one Boss')
 
     api = yaml.safe_load((C / 'openapi.yaml').read_text(encoding='utf-8'))
     assert api['openapi'].startswith('3.1')

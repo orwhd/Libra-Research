@@ -8,7 +8,7 @@ import type {
 } from '../types';
 
 export const STATIC_PERSONA_ROSTER: Persona[] = [
-  { persona_id: 'persona_main', role: 'main', label: 'Main', runtime_agent_id: null, state: 'idle', is_main: true, task_ids: [] },
+  { persona_id: 'persona_main', role: 'main', label: 'Boss', runtime_agent_id: null, state: 'idle', is_main: true, task_ids: [] },
   { persona_id: 'persona_paper', role: 'paper', label: 'Paper', runtime_agent_id: null, state: 'idle', is_main: false, task_ids: [] },
   { persona_id: 'persona_data', role: 'data', label: 'Data', runtime_agent_id: null, state: 'idle', is_main: false, task_ids: [] },
   { persona_id: 'persona_analysis', role: 'analysis', label: 'Analysis', runtime_agent_id: null, state: 'idle', is_main: false, task_ids: [] },
@@ -38,9 +38,13 @@ export const HOME_ANCHORS_WORLD: Record<string, { x: number; y: number }> = {
   persona_support: ROLE_BASE_ANCHORS_WORLD.support,
 };
 
-export const MAIN_COLLISION_RADIUS = { rx: 64, ry: 72 };
-export const SPECIALIST_COLLISION_RADIUS = { rx: 52, ry: 62 };
+export const MAIN_COLLISION_RADIUS = { rx: 71, ry: 79 };
+export const SPECIALIST_COLLISION_RADIUS = { rx: 57, ry: 65 };
 export const AGENT_COLLISION_GAP = 14;
+/** Size multiplier for completed agents parked on the edge bench. */
+export const BENCH_SIZE_FACTOR = 0.6;
+/** Extra clearance between a parked agent and any active agent. */
+export const BENCH_EXTRA_GAP = 36;
 
 const DYNAMIC_RING_OFFSETS: [number, number][] = [
   [126, -54],
@@ -123,7 +127,15 @@ export interface TableObstacle {
   rx: number;
   ry: number;
   memberIds: string[];
+  /** Half-extent of the seated ring (table + seats); non-members keep a relation margin outside it. */
+  outerRx?: number;
+  outerRy?: number;
 }
+
+/** Extra spacing between agents that are NOT related (different table / group), in world units. */
+export const UNRELATED_EXTRA_GAP = 84;
+/** Margin non-members keep outside a table's seated ring so the group reads as one cluster. */
+export const TABLE_OUTSIDER_MARGIN = 110;
 
 export interface EaselObstacle {
   cx: number;
@@ -138,6 +150,22 @@ export interface BubbleObstacle {
   cy: number;
   rx: number;
   ry: number;
+}
+
+export interface PlacedCardObstacle {
+  id: string;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+}
+
+export interface BriefingClusterObstacle {
+  cx: number;
+  cy: number;
+  outerRx: number;
+  outerRy: number;
+  memberIds: string[];
 }
 
 export interface LiveBubblePlacement extends BubbleObstacle {
@@ -184,8 +212,9 @@ export function computeLiveBubblePlacements(options: {
   }[];
   homeAnchorsById: Record<string, { x: number; y: number }>;
   personas: Persona[];
+  sizeScale?: number;
 }): LiveBubblePlacement[] {
-  const { tables, homeAnchorsById, personas } = options;
+  const { tables, homeAnchorsById, personas, sizeScale = 1 } = options;
   if (tables.length === 0) return [];
 
   const allSeatedCoords: { pid: string; x: number; y: number }[] = [];
@@ -246,8 +275,8 @@ export function computeLiveBubblePlacements(options: {
           bubRect,
           s.x,
           s.y,
-          SPECIALIST_COLLISION_RADIUS.rx,
-          SPECIALIST_COLLISION_RADIUS.ry,
+          SPECIALIST_COLLISION_RADIUS.rx * sizeScale,
+          SPECIALIST_COLLISION_RADIUS.ry * sizeScale,
           8
         );
         if (norm < 1.05) {
@@ -275,8 +304,8 @@ export function computeLiveBubblePlacements(options: {
           bubRect,
           ba.x,
           ba.y,
-          SPECIALIST_COLLISION_RADIUS.rx,
-          SPECIALIST_COLLISION_RADIUS.ry,
+          SPECIALIST_COLLISION_RADIUS.rx * sizeScale,
+          SPECIALIST_COLLISION_RADIUS.ry * sizeScale,
           10
         );
         if (norm < 1) {
@@ -322,16 +351,37 @@ export function resolvePersonaCollisions(options: {
   rawCoords: Record<string, { x: number; y: number }>;
   tableObstacles?: TableObstacle[];
   easelObstacle?: EaselObstacle | null;
+  briefingClusterObstacle?: BriefingClusterObstacle | null;
   bubbleObstacles?: BubbleObstacle[];
+  cardObstacles?: PlacedCardObstacle[];
   pinnedIds?: Set<string>;
+  sizeScale?: number;
+  /** Completed agents parked on the edge bench: rendered smaller and kept at a respectful distance. */
+  benchIds?: Set<string>;
+  /** Relation groups (table id, briefing, ...). Same group = close; different/none = extra gap. */
+  groupOf?: Record<string, string>;
+  /** True on the Infinite Canvas in Timeline mode (no stage clamping; cards repel single agents). */
+  allowInfiniteBounds?: boolean;
+  /** Keep cluster seats rigid relative to their table/briefing anchor when colliding with single agents. */
+  lockClusterSeats?: boolean;
+  /** Currently dragged single persona id (holds position while neighbors/Main yield). */
+  activeDraggedPersonaId?: string | null;
 }): Record<string, { x: number; y: number }> {
   const {
     personas,
     rawCoords,
     tableObstacles = [],
     easelObstacle = null,
+    briefingClusterObstacle = null,
     bubbleObstacles = [],
+    cardObstacles = [],
     pinnedIds,
+    sizeScale = 1,
+    benchIds,
+    groupOf = {},
+    allowInfiniteBounds = false,
+    lockClusterSeats = false,
+    activeDraggedPersonaId = null,
   } = options;
   const coords: Record<string, { x: number; y: number }> = {};
   for (const p of personas) {
@@ -339,11 +389,20 @@ export function resolvePersonaCollisions(options: {
     coords[p.persona_id] = { x: c.x, y: c.y };
   }
 
-  const getRadius = (p: Persona) =>
-    p.is_main || p.persona_id === 'persona_main' ? MAIN_COLLISION_RADIUS : SPECIALIST_COLLISION_RADIUS;
+  const getRadius = (p: Persona) => {
+    const base = p.is_main || p.persona_id === 'persona_main' ? MAIN_COLLISION_RADIUS : SPECIALIST_COLLISION_RADIUS;
+    const k = sizeScale * (benchIds?.has(p.persona_id) ? BENCH_SIZE_FACTOR : 1);
+    return { rx: base.rx * k, ry: base.ry * k };
+  };
 
   const getWeight = (p: Persona) => {
-    if (p.is_main || p.persona_id === 'persona_main') return 0;
+    if (p.persona_id === activeDraggedPersonaId) return 0.02;
+    if (p.is_main || p.persona_id === 'persona_main') {
+      if (allowInfiniteBounds && !pinnedIds?.has(p.persona_id)) return 0.65;
+      return 0;
+    }
+    if (lockClusterSeats && pinnedIds?.has(p.persona_id)) return 0;
+    if (benchIds?.has(p.persona_id)) return 0.04;
     if (pinnedIds?.has(p.persona_id)) return 0.2;
     return 0.8;
   };
@@ -367,8 +426,27 @@ export function resolvePersonaCollisions(options: {
 
         let dx = b.x - a.x;
         let dy = b.y - a.y;
-        const minDx = radA.rx + radB.rx + AGENT_COLLISION_GAP;
-        const minDy = radA.ry + radB.ry + AGENT_COLLISION_GAP;
+        // Active agents keep extra distance from parked (bench) agents so they never crowd each other
+        const benchA = benchIds?.has(pa.persona_id) ?? false;
+        const benchB = benchIds?.has(pb.persona_id) ?? false;
+        const gA = groupOf[pa.persona_id];
+        const gB = groupOf[pb.persona_id];
+        const related = Boolean(gA) && gA === gB;
+        const gap =
+          AGENT_COLLISION_GAP +
+          (benchA !== benchB ? BENCH_EXTRA_GAP * sizeScale : 0) +
+          (!related && !benchA && !benchB ? UNRELATED_EXTRA_GAP * sizeScale : 0);
+        const minDx = radA.rx + radB.rx + gap;
+        const minDy = radA.ry + radB.ry + gap;
+        // Seated / pinned agents hold their seat against unrelated neighbours: the outsider yields
+        let effWA = wA;
+        let effWB = wB;
+        if (!related) {
+          if (pinnedIds?.has(pa.persona_id)) effWA = Math.min(effWA, 0.02);
+          if (pinnedIds?.has(pb.persona_id)) effWB = Math.min(effWB, 0.02);
+        }
+        const effTotal = effWA + effWB;
+        if (effTotal <= 0) continue;
 
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
           const angle = ((i * 2.39996 + j * 1.1) % (Math.PI * 2));
@@ -381,17 +459,22 @@ export function resolvePersonaCollisions(options: {
           const scale = 1 / Math.max(0.05, norm) - 1;
           const pushX = dx * scale;
           const pushY = dy * scale;
-          a.x -= pushX * (wA / totalW);
-          a.y -= pushY * (wA / totalW);
-          b.x += pushX * (wB / totalW);
-          b.y += pushY * (wB / totalW);
+          a.x -= pushX * (effWA / effTotal);
+          a.y -= pushY * (effWA / effTotal);
+          b.x += pushX * (effWB / effTotal);
+          b.y += pushY * (effWB / effTotal);
         }
       }
     }
 
-    // 2. Active table perimeter & PPT whiteboard easel exclusion
+    // 2. Active table perimeter, PPT whiteboard easel, and placed dialogue card exclusion
     for (const p of personas) {
-      if (p.is_main || p.persona_id === 'persona_main') continue;
+      if ((p.is_main || p.persona_id === 'persona_main') && (!allowInfiniteBounds || pinnedIds?.has(p.persona_id))) {
+        continue;
+      }
+      if (lockClusterSeats && pinnedIds?.has(p.persona_id)) {
+        continue;
+      }
       const c = coords[p.persona_id];
       const rad = getRadius(p);
 
@@ -400,8 +483,14 @@ export function resolvePersonaCollisions(options: {
         const agentRx = rad.rx + 6;
         const agentRy = 52;
         const gap = isMember ? 8 : 16;
-        const exRx = tbl.rx + agentRx + gap;
-        const exRy = tbl.ry + agentRy + gap;
+        let exRx = tbl.rx + agentRx + gap;
+        let exRy = tbl.ry + agentRy + gap;
+        if (!isMember && tbl.outerRx && tbl.outerRy) {
+          // Outsiders stay clearly beyond the seated ring so the table group reads as one cluster
+          const margin = TABLE_OUTSIDER_MARGIN * sizeScale;
+          exRx = Math.max(exRx, tbl.outerRx + rad.rx + margin);
+          exRy = Math.max(exRy, tbl.outerRy + rad.ry + margin);
+        }
         let dx = c.x - tbl.cx;
         let dy = (c.y + 5) - tbl.cy;
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
@@ -416,7 +505,23 @@ export function resolvePersonaCollisions(options: {
         }
       }
 
-      if (easelObstacle) {
+      if (briefingClusterObstacle && !briefingClusterObstacle.memberIds.includes(p.persona_id)) {
+        const margin = 42 * sizeScale;
+        const exRx = briefingClusterObstacle.outerRx + rad.rx + margin;
+        const exRy = briefingClusterObstacle.outerRy + rad.ry + margin;
+        let dx = c.x - briefingClusterObstacle.cx;
+        let dy = c.y - briefingClusterObstacle.cy;
+        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+          dx = 1;
+          dy = 0;
+        }
+        const norm = Math.hypot(dx / exRx, dy / exRy);
+        if (norm < 1) {
+          const push = 1 / Math.max(0.05, norm);
+          c.x = briefingClusterObstacle.cx + dx * push;
+          c.y = briefingClusterObstacle.cy + dy * push;
+        }
+      } else if (easelObstacle) {
         const exRx = easelObstacle.rx + rad.rx + 8;
         const exRy = easelObstacle.ry + rad.ry + 8;
         const dx = c.x - easelObstacle.cx;
@@ -448,9 +553,39 @@ export function resolvePersonaCollisions(options: {
         }
       }
 
-      // 3. Stage bounds clamping (preserve Main's left Boss zone clear)
-      c.x = Math.max(306, Math.min(944, c.x));
-      c.y = Math.max(66, Math.min(534, c.y));
+      for (const card of cardObstacles) {
+        const qx = Math.max(card.cx - card.rx, Math.min(card.cx + card.rx, c.x));
+        const qy = Math.max(card.cy - card.ry, Math.min(card.cy + card.ry, c.y));
+        const dx = c.x - qx;
+        const dy = c.y - qy;
+        const rrx = rad.rx + 16;
+        const rry = rad.ry + 16;
+        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+          const toLeft = (c.x - (card.cx - card.rx)) + rrx;
+          const toRight = ((card.cx + card.rx) - c.x) + rrx;
+          const toTop = (c.y - (card.cy - card.ry)) + rry;
+          const toBottom = ((card.cy + card.ry) - c.y) + rry;
+          const m = Math.min(toLeft, toRight, toTop, toBottom);
+          if (m === toLeft) c.x = card.cx - card.rx - rrx;
+          else if (m === toRight) c.x = card.cx + card.rx + rrx;
+          else if (m === toTop) c.y = card.cy - card.ry - rry;
+          else c.y = card.cy + card.ry + rry;
+        } else {
+          const norm = Math.hypot(dx / rrx, dy / rry);
+          if (norm < 1) {
+            const scale = 1 / Math.max(0.08, norm) - 1;
+            c.x += dx * scale;
+            c.y += dy * scale;
+          }
+        }
+      }
+
+      // 3. Stage bounds clamping (preserve Main's left Boss zone clear; bypassed on Infinite Canvas)
+      if (!allowInfiniteBounds) {
+        const edgeK = sizeScale * (benchIds?.has(p.persona_id) ? BENCH_SIZE_FACTOR : 1);
+        c.x = Math.max(306, Math.min(1000 - 74 * edgeK, c.x));
+        c.y = Math.max(62 * edgeK, Math.min(600 - 74 * edgeK, c.y));
+      }
     }
   }
 
@@ -527,7 +662,11 @@ export function hydrateFromCanvasProjection(
     byId.set(base.persona_id, { ...base, task_ids: [] });
   }
   for (const p of projection.personas) {
-    byId.set(p.persona_id, { ...p, task_ids: [...(p.task_ids || [])] });
+    const normalizedLabel =
+      (p.is_main || p.persona_id === 'persona_main') && (!p.label || /^main(\s+agent)?$/i.test(p.label.trim()))
+        ? 'Boss'
+        : p.label;
+    byId.set(p.persona_id, { ...p, label: normalizedLabel, task_ids: [...(p.task_ids || [])] });
   }
 
   const rawTables: ActiveTableVisual[] = (projection.collaborations || [])
@@ -582,13 +721,15 @@ export function applyHarnessEventToProjection(
     if (p) {
       p.runtime_agent_id = rtId;
     } else if (pid) {
+      const rawLabel = String(pl.label || pid);
+      const isMain = Boolean(pl.is_main) || pid === 'persona_main';
       personas.push({
         persona_id: pid,
         role: String(pl.role || pid.replace('persona_', '').split('_')[0] || 'support'),
-        label: String(pl.label || pid),
+        label: isMain && /^main(\s+agent)?$/i.test(rawLabel.trim()) ? 'Boss' : rawLabel,
         runtime_agent_id: rtId,
         state: 'assigned',
-        is_main: Boolean(pl.is_main),
+        is_main: isMain,
         task_ids: [],
       });
     }

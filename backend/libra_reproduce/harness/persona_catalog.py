@@ -5,7 +5,7 @@ from ..schemas import Persona
 SPECIALIST_ROLES: tuple[str, ...] = ("paper", "data", "analysis", "validation", "support")
 
 DEFAULT_PERSONA_SPECS: list[dict[str, object]] = [
-    {"persona_id": "persona_main", "role": "main", "label": "Main", "is_main": True},
+    {"persona_id": "persona_main", "role": "main", "label": "Boss", "is_main": True},
     {"persona_id": "persona_paper", "role": "paper", "label": "Paper", "is_main": False},
     {"persona_id": "persona_data", "role": "data", "label": "Data", "is_main": False},
     {"persona_id": "persona_analysis", "role": "analysis", "label": "Analysis", "is_main": False},

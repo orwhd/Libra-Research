@@ -11,7 +11,7 @@ interface RoleVisualSpec {
 
 export const PERSONA_ROLE_SPECS: Record<string, RoleVisualSpec> = {
   main: {
-    name: 'Main',
+    name: 'Boss',
     color: '#FFD24A',
     tint: '#FFF6D8',
     hair: 'M62 52 C 66 30, 80 30, 83 46 C 86 24, 114 24, 117 46 C 120 30, 134 30, 138 52',
@@ -77,7 +77,7 @@ export interface AgentBubbleStyle {
  */
 export function getAgentBubbleStyle(speakerId: string, speakerLabel?: string): AgentBubbleStyle {
   const cleanId = (speakerId || '').trim();
-  const isMain = cleanId === 'persona_main' || /^main\b/i.test(speakerLabel || '');
+  const isMain = cleanId === 'persona_main' || /^(boss|main)\b/i.test(speakerLabel || '');
 
   let roleKey = 'support';
   if (isMain) {
@@ -241,19 +241,60 @@ function hashSeed(id: string): number {
   return ((h >>> 0) % 1000) / 100;
 }
 
+export type PersonaInteractionRole = 'speaker' | 'listener' | 'presenter' | 'audience' | 'seated' | null;
+
+export interface WorldPoint {
+  x: number;
+  y: number;
+}
+
 interface PersonaSvgProps {
   persona: Persona;
   worldX: number;
   worldY: number;
   isSpeakingPulse?: boolean;
   motionDisabled: boolean;
+  /** Ordered world-space attention targets (speaker, table center, Main, other members). */
+  lookTargets?: WorldPoint[];
+  /** Role of this persona in the current visible interaction (drives lean, nods, bob). */
+  interaction?: PersonaInteractionRole;
+  /** Responsive size multiplier derived from the canvas width. */
+  sizeScale?: number;
+  /** Parked on the edge bench after completion: quieter, smaller status glyph. */
+  benched?: boolean;
+  /**
+   * Pointer interaction mode:
+   * - 'none': solo Live actor (`pointer-events: none`, UI-03 invariant)
+   * - 'group_click': Live actor inside a table/briefing composite entity (hover/click delegates to group)
+   * - 'replay_drag': Timeline replay actor (draggable individually or as part of its composite group)
+   */
+  interactiveMode?: 'none' | 'group_click' | 'replay_drag';
+  inCompositeGroup?: boolean;
+  isDragging?: boolean;
+  onDragPointerDown?: (persona: Persona, e: React.PointerEvent<HTMLDivElement>) => void;
+  onPersonaPointerEnter?: (persona: Persona, e: React.PointerEvent<HTMLDivElement>) => void;
+  onPersonaPointerLeave?: (persona: Persona) => void;
+  onPersonaClick?: (persona: Persona, e: React.MouseEvent<HTMLDivElement>) => void;
   onSilentNavigate?: (persona: Persona) => void;
 }
+
+/** Deterministic pseudo-random in [0, 1) from an integer key + seed. */
+function rand01(key: number, seed: number): number {
+  const v = Math.sin(key * 127.1 + seed * 311.7) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const WALK_DURATION_MS = 880;
+const POP_DURATION_MS = 520;
 
 /**
  * Pure React/SVG port of `reference/agent_motion/agent.js` adhering strictly to Frozen L1.5:
  * - Preserves exact role colors, pen strokes, hair/nose paths, Main orbit ring (~1.2x scale), and facial morphing.
  * - Zero reaction on click, hover, or focus: non-interactive status actor with zero write API calls.
+ * - Ambient motion layer (all rAF-driven, disabled under reduced motion):
+ *   attention gaze toward speaker / table / Main, idle saccades, walking hops with lean + squash,
+ *   state-change anticipation pop, speaker lip-flap + bob, listener nods, waiting sway, failure droop.
  */
 export const PersonaSvg: React.FC<PersonaSvgProps> = ({
   persona,
@@ -261,6 +302,17 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
   worldY,
   isSpeakingPulse = false,
   motionDisabled,
+  lookTargets,
+  interaction = null,
+  sizeScale = 1,
+  benched = false,
+  interactiveMode = 'none',
+  inCompositeGroup = false,
+  isDragging = false,
+  onDragPointerDown,
+  onPersonaPointerEnter,
+  onPersonaPointerLeave,
+  onPersonaClick,
 }) => {
   const roleKey: AgentRole = persona.role in PERSONA_ROLE_SPECS ? persona.role : 'support';
   const spec = PERSONA_ROLE_SPECS[roleKey];
@@ -275,18 +327,61 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
   const mouthRef = useRef<SVGPathElement>(null);
   const noseRef = useRef<SVGPathElement>(null);
   const faceRef = useRef<SVGGElement>(null);
+  const headRef = useRef<SVGGElement>(null);
+  const motionRef = useRef<SVGGElement>(null);
+  const shadowRef = useRef<SVGEllipseElement>(null);
+  const speechRef = useRef<SVGGElement>(null);
 
   const curPoseRef = useRef<ExprPose>(clonePose(EXPR[STATE_TO_EXPR[persona.state] || 'calm']));
   const tweenRef = useRef<{ from: ExprPose; to: ExprPose; t0: number; dur: number } | null>(null);
-  const blinkRef = useRef<{ nextAt: number; startAt: number }>({
+  const blinkRef = useRef<{ nextAt: number; startAt: number; double: boolean }>({
     nextAt: 1600 + (seed % 3) * 1100,
     startAt: -1e9,
+    double: false,
   });
 
-  const targetExprKey =
-    persona.state === 'debating' && isSpeakingPulse
-      ? 'speaking'
-      : STATE_TO_EXPR[persona.state] || 'calm';
+  // Live, frame-loop-readable copies of props (avoid restarting the rAF loop on every render)
+  const worldRef = useRef<WorldPoint>({ x: worldX, y: worldY });
+  const targetsRef = useRef<WorldPoint[]>(lookTargets || []);
+  const interactionRef = useRef<PersonaInteractionRole>(interaction);
+  const stateRef = useRef<VisualState>(persona.state);
+  worldRef.current = { x: worldX, y: worldY };
+  targetsRef.current = lookTargets || [];
+  interactionRef.current = interaction;
+  stateRef.current = persona.state;
+
+  const walkRef = useRef<{ t0: number; dx: number; dy: number } | null>(null);
+  const prevWorldRef = useRef<WorldPoint | null>(null);
+  const popRef = useRef<{ t0: number; state: VisualState } | null>(null);
+  const prevStateRef = useRef<VisualState>(persona.state);
+  const dyn = useRef({ gx: 0, gy: 0, lean: 0, leanY: 0, droop: 0, facing: 1, lastNow: 0 });
+
+  const isSpeaking = persona.state === 'debating' && isSpeakingPulse;
+  const targetExprKey = isSpeaking ? 'speaking' : STATE_TO_EXPR[persona.state] || 'calm';
+
+  // Walking detection: world anchor moved -> hop + lean along the travel vector (matches CSS left/top transition)
+  useEffect(() => {
+    const prev = prevWorldRef.current;
+    prevWorldRef.current = { x: worldX, y: worldY };
+    if (isDragging) {
+      walkRef.current = null;
+      return;
+    }
+    if (!prev || motionDisabled) return;
+    const dx = worldX - prev.x;
+    const dy = worldY - prev.y;
+    if (Math.hypot(dx, dy) > 4) {
+      walkRef.current = { t0: performance.now(), dx, dy };
+    }
+  }, [worldX, worldY, motionDisabled, isDragging]);
+
+  // State-change anticipation pop (squash -> overshoot -> settle)
+  useEffect(() => {
+    if (prevStateRef.current !== persona.state) {
+      prevStateRef.current = persona.state;
+      if (!motionDisabled) popRef.current = { t0: performance.now(), state: persona.state };
+    }
+  }, [persona.state, motionDisabled]);
 
   useEffect(() => {
     const targetPose = EXPR[targetExprKey] || EXPR.calm;
@@ -305,30 +400,85 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
 
   useEffect(() => {
     const applyPoseToDom = (now: number) => {
+      const d = dyn.current;
+      const dt = d.lastNow ? clamp((now - d.lastNow) / 1000, 0, 0.1) : 1 / 60;
+      d.lastNow = now;
+      const tSec = now / 1000;
+      const state = stateRef.current;
+      const role = interactionRef.current;
+      const me = worldRef.current;
+
       if (tweenRef.current) {
         const k = Math.min(1, (now - tweenRef.current.t0) / tweenRef.current.dur);
         curPoseRef.current = mixPose(tweenRef.current.from, tweenRef.current.to, ease(k));
         if (k >= 1) tweenRef.current = null;
       }
       const f = clonePose(curPoseRef.current);
-      let gx = f.gaze[0];
-      const gy = f.gaze[1];
 
-      // Subtle state-driven gaze only (zero interaction reactivity): reporting specialists glance left toward Main & easel
-      if ((persona.state === 'reporting' || persona.state === 'handoff') && !persona.is_main) {
-        gx -= 3.5;
-      }
+      // ---------- Attention / gaze ----------
+      let wantGx = 0;
+      let wantGy = 0;
+      let facingDir = 0;
+      const walk = walkRef.current;
+      const walkK = walk ? (now - walk.t0) / WALK_DURATION_MS : 1;
+      if (walk && walkK >= 1) walkRef.current = null;
 
       if (!motionDisabled) {
-        const tSec = now / 1000;
-        if (persona.state === 'working') {
-          gx += Math.sin(tSec * 1.4 + seed) * 1.8;
+        if (walk && walkK < 1) {
+          const len = Math.hypot(walk.dx, walk.dy) || 1;
+          wantGx = (walk.dx / len) * 6;
+          wantGy = (walk.dy / len) * 3.5;
+          facingDir = Math.sign(walk.dx);
+        } else {
+          const targets = targetsRef.current;
+          if (targets.length > 0) {
+            // Cycle attention between targets; primary target holds longer
+            const slot = Math.floor((tSec + seed) / 2.4);
+            const pick = targets.length === 1 || rand01(slot, seed) < 0.62 ? 0 : 1 + Math.floor(rand01(slot + 7, seed) * (targets.length - 1));
+            const tgt = targets[Math.min(pick, targets.length - 1)];
+            const vx = tgt.x - me.x;
+            const vy = tgt.y - me.y;
+            const len = Math.hypot(vx, vy);
+            if (len > 1) {
+              wantGx = (vx / len) * 5.5;
+              wantGy = (vy / len) * 3.8;
+              facingDir = Math.abs(vx) > 6 ? Math.sign(vx) : 0;
+            }
+          } else if (state === 'working') {
+            // Reading / scanning a document: left-right sweep, eyes slightly lowered, line-return snap
+            const sweep = ((tSec * 0.55 + seed) % 1 + 1) % 1;
+            wantGx = sweep < 0.82 ? -4 + (sweep / 0.82) * 8 : 4 - ((sweep - 0.82) / 0.18) * 8;
+            wantGy = 3.2;
+          } else if (state === 'idle' || state === 'completed' || state === 'waiting') {
+            // Idle saccades: hold a random glance, then snap to the next one
+            const slot = Math.floor((tSec + seed * 0.7) / (2.2 + (seed % 1.3)));
+            wantGx = (rand01(slot, seed) - 0.5) * 6;
+            wantGy = (rand01(slot + 13, seed) - 0.5) * 4;
+            if (state === 'waiting') wantGy -= 3;
+          }
         }
+        const gk = 1 - Math.exp(-dt * (walk ? 9 : 14));
+        d.gx += (wantGx - d.gx) * gk;
+        d.gy += (wantGy - d.gy) * gk;
+      } else {
+        d.gx = 0;
+        d.gy = 0;
+      }
+      if (facingDir !== 0) d.facing = facingDir;
+
+      const gx = f.gaze[0] + d.gx;
+      const gy = f.gaze[1] + d.gy;
+
+      // ---------- Blink (with occasional double-blink) ----------
+      if (!motionDisabled) {
         if (now > blinkRef.current.nextAt) {
           blinkRef.current.startAt = now;
-          blinkRef.current.nextAt = now + 3200 + ((seed * 430) % 2800);
+          blinkRef.current.double = rand01(Math.floor(now / 997), seed) < 0.22;
+          blinkRef.current.nextAt = now + 2800 + ((seed * 430 + now * 0.37) % 3200);
         }
-        const bk = (now - blinkRef.current.startAt) / 150;
+        const since = now - blinkRef.current.startAt;
+        let bk = since / 150;
+        if (blinkRef.current.double && bk >= 1.4 && bk < 2.4) bk -= 1.4;
         if (bk >= 0 && bk < 1) {
           const b = Math.sin(bk * Math.PI);
           for (const eye of [f.eL, f.eR]) {
@@ -341,6 +491,29 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
               }
             }
           }
+        }
+      }
+
+      // ---------- Speaking lip-flap & expressive brows ----------
+      let flap = 0;
+      if (!motionDisabled && isSpeaking) {
+        flap = Math.abs(Math.sin(tSec * 9.2 + Math.sin(tSec * 2.3) * 1.6)) * (0.55 + 0.45 * Math.abs(Math.sin(tSec * 1.7 + seed)));
+        const k = 0.22 + 0.78 * flap;
+        f.mb[3] = f.mt[3] + (f.mb[3] - f.mt[3]) * k;
+        f.mb[5] = f.mt[5] + (f.mb[5] - f.mt[5]) * k;
+        const lift = flap * 2.4;
+        for (const br of [f.bL, f.bR]) {
+          br[1] -= lift;
+          br[3] -= lift;
+          br[5] -= lift;
+        }
+      } else if (!motionDisabled && role === 'listener') {
+        // Attentive listener: brows gently raise in sync with nods
+        const lift = Math.max(0, Math.sin(tSec * 2.6 + seed)) * 1.2;
+        for (const br of [f.bL, f.bR]) {
+          br[1] -= lift;
+          br[3] -= lift;
+          br[5] -= lift;
         }
       }
 
@@ -374,7 +547,120 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
         );
       }
       noseRef.current?.setAttribute('transform', `translate(${f1(gx * 0.6)} ${f1(gy * 0.5)})`);
+      // State tilt only (kept static per state so the persona never "reacts" to pointer input)
       faceRef.current?.setAttribute('transform', `rotate(${f1(f.tilt)} 100 112)`);
+
+      // ---------- Head & body motion ----------
+      let headRot = 0;
+      let headY = 0;
+      let tx = 0;
+      let ty = 0;
+      let rot = 0;
+      let sx = 1;
+      let sy = 1;
+      let shadowScale = 1;
+
+      if (!motionDisabled) {
+        // Lean toward the attention target while engaged in an interaction
+        const leanAmt =
+          role === 'speaker' ? 8 : role === 'listener' ? 5 : role === 'presenter' ? 6 : role === 'audience' ? 3 : role === 'seated' ? 3.5 : 0;
+        const wantLean = d.facing * leanAmt * (Math.abs(d.gx) > 1 ? 1 : 0.4);
+        const wantDroop = state === 'failed' ? 7 : state === 'paused' ? 3 : 0;
+        const lk = 1 - Math.exp(-dt * 5);
+        d.lean += (wantLean - d.lean) * lk;
+        d.droop += (wantDroop - d.droop) * lk;
+        tx += d.lean;
+        rot += d.lean * 0.55;
+        ty += d.droop;
+        rot += state === 'failed' ? -d.droop * 0.5 : 0;
+
+        if (role === 'speaker') {
+          // Emphatic speaking bob + slight sway, synced loosely with lip flap
+          ty -= Math.abs(Math.sin(tSec * 4.6 + seed)) * 2.6;
+          rot += Math.sin(tSec * 2.3 + seed) * 2.2;
+          headRot += Math.sin(tSec * 3.4 + seed) * 2.4;
+          headY -= flap * 1.6;
+        } else if (role === 'listener' || role === 'audience') {
+          // Periodic double-nod
+          const period = 2.6 + (seed % 1.1);
+          const ph = ((tSec + seed * 0.9) % period) / period;
+          if (ph < 0.26) {
+            const n = Math.sin((ph / 0.26) * Math.PI * 2);
+            headY += Math.max(0, n) * 4.2;
+            headRot += Math.max(0, n) * 1.6 * d.facing;
+          }
+        } else if (role === 'presenter') {
+          // Presenting: open posture, gentle gesture rhythm
+          ty -= Math.abs(Math.sin(tSec * 3.1 + seed)) * 1.8;
+          headRot += Math.sin(tSec * 1.9 + seed) * 2.8;
+        } else if (state === 'working') {
+          // Typing bob with occasional "aha" lift
+          headY += Math.sin(tSec * 7.4 + seed) * 0.9;
+          const aha = ((tSec + seed) % 6.5) / 6.5;
+          if (aha < 0.08) ty -= Math.sin((aha / 0.08) * Math.PI) * 4;
+        } else if (state === 'waiting') {
+          rot += Math.sin(tSec * 1.3 + seed) * 3.2;
+          headRot += Math.sin(tSec * 0.9 + seed) * 2;
+        } else if (state === 'assigned') {
+          // Ready stance: small eager bounce
+          ty -= Math.abs(Math.sin(tSec * 5.2 + seed)) * 1.6;
+        } else if (state === 'idle') {
+          headRot += Math.sin(tSec * 0.6 + seed) * 1.4;
+        }
+
+        // Walking: three hops with lean into travel direction + landing squash
+        if (walk && walkK < 1) {
+          const len = Math.hypot(walk.dx, walk.dy) || 1;
+          const dirX = walk.dx / len;
+          const hopsPhase = walkK * Math.PI * 3;
+          const hop = Math.abs(Math.sin(hopsPhase)) * 10 * (1 - walkK * 0.35);
+          ty -= hop;
+          rot += dirX * 9 * Math.sin(walkK * Math.PI);
+          const contact = 1 - Math.abs(Math.sin(hopsPhase));
+          const squash = contact * 0.07 * (1 - walkK * 0.5);
+          sx *= 1 + squash;
+          sy *= 1 - squash;
+          shadowScale *= 1 - (hop / 10) * 0.35;
+        }
+
+        // State-change pop: anticipation dip then overshoot
+        const pop = popRef.current;
+        if (pop) {
+          const pk = (now - pop.t0) / POP_DURATION_MS;
+          if (pk >= 1) {
+            popRef.current = null;
+          } else {
+            const s =
+              pk < 0.22
+                ? 1 - 0.06 * Math.sin((pk / 0.22) * Math.PI * 0.5)
+                : 0.94 + 0.06 + 0.07 * Math.sin(((pk - 0.22) / 0.78) * Math.PI) * (1 - (pk - 0.22) / 0.78);
+            sx *= pk < 0.22 ? 2 - s : s;
+            sy *= s;
+            if (pop.state === 'completed' && pk >= 0.22) {
+              const jump = Math.sin(((pk - 0.22) / 0.78) * Math.PI) * 14;
+              ty -= jump;
+              shadowScale *= 1 - (jump / 14) * 0.4;
+            }
+            if (pop.state === 'failed') {
+              tx += Math.sin(pk * Math.PI * 8) * 4 * (1 - pk);
+            }
+          }
+        }
+      }
+
+      motionRef.current?.setAttribute(
+        'transform',
+        `translate(${f1(tx)} ${f1(ty)}) rotate(${f1(rot)} 100 188) translate(100 188) scale(${(Math.round(sx * 1000) / 1000).toString()} ${(Math.round(sy * 1000) / 1000).toString()}) translate(-100 -188)`
+      );
+      headRef.current?.setAttribute('transform', `translate(0 ${f1(headY)}) rotate(${f1(headRot)} 100 150)`);
+      if (shadowRef.current) {
+        shadowRef.current.setAttribute('transform', `translate(${f1(100 + tx * 0.6)} 194) scale(${f1(shadowScale * 100) / 100} 1)`);
+        shadowRef.current.style.opacity = String(f1(0.14 + 0.1 * shadowScale) );
+      }
+      if (speechRef.current) {
+        speechRef.current.setAttribute('transform', d.facing < 0 ? 'translate(200 0) scale(-1 1)' : '');
+        speechRef.current.style.opacity = String(f1(0.45 + 0.55 * flap));
+      }
     };
 
     applyPoseToDom(performance.now());
@@ -389,23 +675,52 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
     };
     raf = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(raf);
-  }, [persona.state, targetExprKey, motionDisabled, seed]);
+  }, [targetExprKey, motionDisabled, seed, isSpeaking]);
 
   // Main is ~20% larger than research agents (L1.5 §1 & §25)
-  const widthPct = persona.is_main ? 10.6 : 8.8;
+  const widthPct = (persona.is_main ? 12.5 : 10.5) * sizeScale;
   const leftPct = (worldX / 1000) * 100;
   const topPct = (worldY / 600) * 100;
+
+  const isInteractive = interactiveMode !== 'none';
+  const isReplayDraggable = interactiveMode === 'replay_drag';
 
   return (
     <div
       role="img"
-      className={`rep-persona-node role-${roleKey} state-${persona.state} ${persona.is_main ? 'is-main' : ''}`}
+      className={`rep-persona-node role-${roleKey} state-${persona.state} ${persona.is_main ? 'is-main' : ''} ${benched ? 'is-benched' : ''} ${
+        interaction ? `interaction-${interaction}` : ''
+      } ${inCompositeGroup ? 'in-composite-group' : ''} ${
+        isInteractive ? 'is-group-interactive' : ''
+      } ${isReplayDraggable ? 'is-replay-draggable' : ''} ${isDragging ? 'is-dragging' : ''}`}
       data-testid={`persona-${persona.persona_id}`}
       data-persona-id={persona.persona_id}
       data-persona-state={persona.state}
+      data-interaction={interaction || 'none'}
       data-world-x={Math.round(worldX)}
       data-world-y={Math.round(worldY)}
       aria-label={`${persona.label} (${persona.state})`}
+      title={`${persona.label} · ${persona.state}`}
+      onPointerDown={
+        isReplayDraggable
+          ? (e) => onDragPointerDown?.(persona, e)
+          : undefined
+      }
+      onPointerEnter={
+        isInteractive
+          ? (e) => onPersonaPointerEnter?.(persona, e)
+          : undefined
+      }
+      onPointerLeave={
+        isInteractive
+          ? () => onPersonaPointerLeave?.(persona)
+          : undefined
+      }
+      onClick={
+        inCompositeGroup
+          ? (e) => onPersonaClick?.(persona, e)
+          : undefined
+      }
       style={
         {
           left: `${leftPct.toFixed(3)}%`,
@@ -418,63 +733,155 @@ export const PersonaSvg: React.FC<PersonaSvgProps> = ({
         } as React.CSSProperties
       }
     >
-      <svg viewBox="-40 -30 280 260" aria-hidden="true" className="rep-persona-svg">
+      <svg viewBox="-16 -14 232 232" aria-hidden="true" className="rep-persona-svg">
+        <ellipse ref={shadowRef} className="rep-persona-shadow" cx="0" cy="0" rx="58" ry="7" transform="translate(100 194)" />
         <g className="rep-persona-body">
-          {persona.is_main && (
-            <path
-              className="rep-ink rep-orbit"
-              d="M18 128 C 8 60, 70 14, 128 24 C 186 34, 206 100, 186 152 C 166 200, 92 214, 48 186"
-            />
-          )}
-          <circle className="rep-fill" cx="100" cy="112" r="76" />
-          <g ref={faceRef} className="rep-face">
-            <path className="rep-ink rep-hair" d={spec.hair} />
-            <path ref={bLRef} className="rep-ink rep-brow" />
-            <path ref={bRRef} className="rep-ink rep-brow" />
-            <path ref={eLRef} className="rep-ink rep-eye" />
-            <path ref={eRRef} className="rep-ink rep-eye" />
-            <path ref={noseRef} className="rep-ink rep-nose" d={spec.nose} />
-            <path ref={mouthRef} className="rep-mouth" />
+          <g ref={motionRef} className="rep-persona-motion">
+            {persona.is_main && (
+              <path
+                className="rep-ink rep-orbit"
+                d="M18 128 C 8 60, 70 14, 128 24 C 186 34, 206 100, 186 152 C 166 200, 92 214, 48 186"
+              />
+            )}
+            <g ref={headRef} className="rep-head-motion">
+              <circle className="rep-fill" cx="100" cy="112" r="76" />
+              <g ref={faceRef} className="rep-face">
+                <path className="rep-ink rep-hair" d={spec.hair} />
+                <path ref={bLRef} className="rep-ink rep-brow" />
+                <path ref={bRRef} className="rep-ink rep-brow" />
+                <path ref={eLRef} className="rep-ink rep-eye" />
+                <path ref={eRRef} className="rep-ink rep-eye" />
+                <path ref={noseRef} className="rep-ink rep-nose" d={spec.nose} />
+                <path ref={mouthRef} className="rep-mouth" />
+              </g>
+            </g>
+            {isSpeaking && (
+              <g ref={speechRef} className="rep-ov-speaking">
+                <path className="rep-ink rep-thin rep-speech-arc arc-1" pathLength={1} d="M186 128 C 194 136, 194 152, 186 160" />
+                <path className="rep-ink rep-thin rep-speech-arc arc-2" pathLength={1} d="M200 118 C 214 134, 214 156, 200 172" />
+              </g>
+            )}
+            <g className="rep-status-mark-scale" transform={benched ? "translate(186 40) scale(0.72) translate(-186 -40)" : "translate(200 30) scale(1.1) translate(-200 -30)"}>
+              <StatusMark state={persona.state} />
+            </g>
           </g>
-          {persona.state === 'working' && (
-            <g className="rep-ov-working">
-              <path
-                className="rep-ink rep-thin"
-                d="M166 190 C 174 180, 180 196, 188 186 S 202 194, 212 184"
-              />
-            </g>
-          )}
-          {persona.state === 'waiting' && (
-            <g className="rep-ov-waiting">
-              <circle cx="186" cy="42" r="4.5" fill="#1b1b1f" />
-              <circle cx="202" cy="32" r="4.5" fill="#1b1b1f" opacity="0.6" />
-              <circle cx="218" cy="22" r="4.5" fill="#1b1b1f" opacity="0.35" />
-            </g>
-          )}
-          {persona.state === 'paused' && (
-            <g className="rep-ov-paused">
-              <path className="rep-ink" d="M190 28 L190 56 M206 28 L206 56" />
-            </g>
-          )}
-          {persona.state === 'failed' && (
-            <g className="rep-ov-failed">
-              <path
-                className="rep-ink"
-                d="M66 96 L82 112 M82 96 L66 112 M118 96 L134 112 M134 96 L118 112"
-              />
-            </g>
-          )}
-          {persona.state === 'completed' && (
-            <g className="rep-ov-completed">
-              <path className="rep-ink" d="M180 46 L193 60 L218 26" />
-            </g>
-          )}
         </g>
       </svg>
       <span className="rep-persona-tag">
         <span className="rep-persona-name">{persona.label}</span>
-        <span className="rep-persona-status">{persona.state}</span>
       </span>
     </div>
   );
+};
+
+/**
+ * Exaggerated pen-drawn status glyphs (replace the textual state label).
+ * Drawn top-right of the head in persona SVG space (head center 100,112, r 76).
+ * idle intentionally has no glyph: a calm face without marks reads as "idle".
+ */
+const StatusMark: React.FC<{ state: VisualState }> = ({ state }) => {
+  switch (state) {
+    case 'assigned':
+      return (
+        <g className="rep-status-mark mark-assigned" data-status-mark="assigned">
+          <path className="rep-mark-ink rep-ov-draw" pathLength={1} d="M210 -18 C 208 0, 206 16, 203 34" />
+          <circle className="rep-mark-dot" cx="201" cy="54" r="3.6" />
+        </g>
+      );
+    case 'working':
+      return (
+        <g className="rep-status-mark mark-working" data-status-mark="working">
+          <g className="rep-mark-pencil">
+            <path
+              className="rep-mark-ink rep-ov-draw"
+              pathLength={1}
+              d="M184 44 L224 2 L240 18 L200 60 Z M184 44 L176 68 L200 60 M216 10 L232 26"
+            />
+          </g>
+          <path
+            className="rep-mark-ink rep-mark-thin rep-mark-scribble"
+            pathLength={1}
+            d="M150 214 C 160 198, 170 222, 182 204 S 202 220, 214 202 S 232 214, 244 200"
+          />
+        </g>
+      );
+    case 'waiting':
+      return (
+        <g className="rep-status-mark mark-waiting" data-status-mark="waiting">
+          <g className="rep-mark-hourglass">
+            <path
+              className="rep-mark-ink rep-ov-draw"
+              pathLength={1}
+              d="M182 -16 L234 -16 M182 60 L234 60 M188 -16 C 188 12, 226 22, 226 60 M228 -16 C 228 12, 190 22, 190 60"
+            />
+            <path className="rep-mark-sand" d="M196 52 L220 52 L208 40 Z" />
+          </g>
+        </g>
+      );
+    case 'debating':
+      return (
+        <g className="rep-status-mark mark-debating" data-status-mark="debating">
+          <g className="rep-mark-bubble b1">
+            <path
+              className="rep-mark-ink rep-ov-draw"
+              pathLength={1}
+              d="M166 6 C 166 -18, 214 -20, 216 4 C 218 26, 190 30, 180 26 L166 40 L170 22 C 166 18, 166 12, 166 6 Z"
+            />
+          </g>
+          <g className="rep-mark-bubble b2">
+            <path
+              className="rep-mark-ink rep-ov-draw"
+              pathLength={1}
+              d="M246 34 C 246 14, 206 12, 204 32 C 202 50, 226 54, 234 50 L246 62 L242 46 C 246 44, 246 40, 246 34 Z"
+            />
+          </g>
+        </g>
+      );
+    case 'reporting':
+      return (
+        <g className="rep-status-mark mark-reporting" data-status-mark="reporting">
+          <path
+            className="rep-mark-ink rep-ov-draw"
+            pathLength={1}
+            d="M180 32 L180 6 L222 -14 L222 52 Z M180 10 L166 10 L166 28 L180 28 M184 32 L190 50"
+          />
+          <g className="rep-mark-sound">
+            <path className="rep-mark-ink rep-mark-thin" d="M234 2 L248 -6 M236 19 L252 19 M234 36 L248 44" />
+          </g>
+        </g>
+      );
+    case 'handoff':
+      return (
+        <g className="rep-status-mark mark-handoff" data-status-mark="handoff">
+          <g className="rep-mark-arrow">
+            <path
+              className="rep-mark-ink rep-ov-draw"
+              pathLength={1}
+              d="M170 46 C 178 4, 214 -10, 240 14 M224 16 L241 15 L238 -2"
+            />
+          </g>
+        </g>
+      );
+    case 'paused':
+      return (
+        <g className="rep-status-mark mark-paused" data-status-mark="paused">
+          <path className="rep-mark-ink rep-mark-heavy rep-ov-draw" pathLength={1} d="M196 -12 L196 50 M224 -12 L224 50" />
+        </g>
+      );
+    case 'failed':
+      return (
+        <g className="rep-status-mark mark-failed" data-status-mark="failed">
+          <path className="rep-mark-ink rep-mark-heavy rep-ov-draw" pathLength={1} d="M186 -12 L236 38 M236 -12 L186 38" />
+          <path className="rep-mark-ink rep-mark-thin" d="M66 96 L82 112 M82 96 L66 112 M118 96 L134 112 M134 96 L118 112" />
+        </g>
+      );
+    case 'completed':
+      return (
+        <g className="rep-status-mark mark-completed" data-status-mark="completed">
+          <path className="rep-mark-ink rep-mark-heavy rep-ov-draw" pathLength={1} d="M170 16 L198 46 L244 -16" />
+        </g>
+      );
+    default:
+      return null;
+  }
 };

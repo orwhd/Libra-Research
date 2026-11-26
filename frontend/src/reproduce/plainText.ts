@@ -76,3 +76,50 @@ export function formatShortContextChip(ctx: SelectedContext, rawLabel: string): 
   }
   return pickCleanWords(plain || ctx.id, 18);
 }
+
+const TRAILING_STOPWORDS = /\s+(?:and|or|of|the|a|an|for|in|on|to|with|&|by|at)$/i;
+
+/**
+ * Condense verbose agent output into a short, scannable line for compact popovers:
+ * - replaces long quoted paper titles with "the paper" and drops long parentheticals,
+ * - keeps whole sentences while they fit in `maxChars`, otherwise clips at a word boundary,
+ * - never emits ellipses or dangling connector words.
+ */
+export function toCompactLine(raw: string | null | undefined, maxChars = 110): string {
+  let t = toPlainUiText(raw, 4000)
+    .replace(/['"“‘][^'"”’]{24,}['"”’]/g, 'the paper')
+    .replace(/\s*\([^)]{4,90}\)/g, '')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return '';
+  if (t.length <= maxChars) return t;
+
+  const sentences = t.match(/[^.!?。]+[.!?。]+(?=\s|$)|[^.!?。]+$/g) || [t];
+  let out = '';
+  let used = 0;
+  for (const s of sentences) {
+    const next = out ? `${out} ${s.trim()}` : s.trim();
+    if (next.length > maxChars) break;
+    out = next;
+    used += 1;
+  }
+  if (out.length >= maxChars * 0.45) return out;
+
+  // Too little fits as whole sentences: add the next sentence clipped at a clause boundary
+  const pending = sentences[used]?.trim() || '';
+  const budget = maxChars - (out ? out.length + 1 : 0);
+  const clipped = clipAtClause(pending, budget);
+  return out ? (clipped ? `${out} ${clipped}` : out) : clipped || clipAtClause(t, maxChars);
+}
+
+function clipAtClause(text: string, maxChars: number): string {
+  if (!text || maxChars < 12) return '';
+  if (text.length <= maxChars) return text;
+  const windowStr = text.slice(0, maxChars);
+  const clauseIdx = Math.max(windowStr.lastIndexOf(', '), windowStr.lastIndexOf('; '), windowStr.lastIndexOf(': '));
+  let t = clauseIdx >= maxChars * 0.35 ? windowStr.slice(0, clauseIdx) : pickCleanWords(text, maxChars);
+  t = t.replace(/[\s,;:(\-—&]+$/g, '');
+  while (TRAILING_STOPWORDS.test(t)) t = t.replace(TRAILING_STOPWORDS, '');
+  return t;
+}

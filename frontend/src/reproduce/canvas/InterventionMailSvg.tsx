@@ -59,7 +59,7 @@ export const InterventionMailSvg: React.FC<InterventionMailSvgProps> = ({
         role="button"
         tabIndex={0}
         pointerEvents="all"
-        aria-label="Human intervention request email sent to Main Agent — click to answer in Chat"
+        aria-label="Human intervention request email sent to Boss Agent — click to answer in Chat"
         onPointerEnter={onPointerEnter}
         onPointerLeave={onPointerLeave}
         onClick={(e) => {

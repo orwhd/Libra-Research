@@ -165,7 +165,7 @@ class MainAgentGateway:
                     target_ids=from_ids,
                     subject=EventSubject(kind="debate", id=debate_id or run_id),
                     status="resolved",
-                    summary=f"Main relayed human decision to debate team: {text[:120]}",
+                    summary=f"Boss relayed human decision to debate team: {text[:120]}",
                     payload={
                         "intervention_id": int_id,
                         "debate_id": debate_id,
@@ -182,12 +182,12 @@ class MainAgentGateway:
                     target_ids=from_ids,
                     subject=EventSubject(kind="debate", id=debate_id or run_id),
                     status="active",
-                    summary=f"Main relayed human decision: {text}",
+                    summary=f"Boss relayed human decision: {text}",
                     payload={
                         "debate_id": debate_id,
                         "claim_id": "claim_robustness_validation",
                         "stance": "human_guidance",
-                        "public_summary": f"Human investigator guidance relayed by Main: {text}",
+                        "public_summary": f"Human investigator guidance relayed by Boss: {text}",
                     },
                     source="user",
                 )
@@ -200,7 +200,7 @@ class MainAgentGateway:
                 selected_context=cmd.selected_context,
                 attachment_ids=cmd.attachment_ids,
                 status="accepted",
-                message="Main Agent relayed your decision to the debating specialists; Round 2 experiments are resuming.",
+                message="Boss Agent relayed your decision to the debating specialists; Round 2 experiments are resuming.",
                 mutate_fn=_commit_intervention_reply,
             )
             if not was_dup:
@@ -316,7 +316,7 @@ class MainAgentGateway:
                 target_ids=["persona_main"],
                 subject=EventSubject(kind="run", id=run_id),
                 status="running",
-                summary=f"Main Agent accepted command ({command_id}): {text[:90]}",
+                summary=f"Boss Agent accepted command ({command_id}): {text[:90]}",
                 payload={
                     "command_id": command_id,
                     "selected_context": cmd.selected_context.model_dump() if cmd.selected_context else None,
@@ -327,11 +327,11 @@ class MainAgentGateway:
             return ev
 
         if is_dynamic_spawn_followup:
-            ack_msg = "Main Agent accepted the dynamic multi-agent scaling request and is spawning specialist instances."
+            ack_msg = "Boss Agent accepted the dynamic multi-agent scaling request and is spawning specialist instances."
         elif is_roundtable_followup:
-            ack_msg = "Main Agent accepted the methodological review request and is convening the research team."
+            ack_msg = "Boss Agent accepted the methodological review request and is convening the research team."
         else:
-            ack_msg = "Main Agent accepted the reproduction plan and dispatched Paper, Data, Analysis, and Validation under Scheduler governance."
+            ack_msg = "Boss Agent accepted the reproduction plan and dispatched Paper, Data, Analysis, and Validation under Scheduler governance."
 
         resp, was_dup, _ = self.store.record_command_atomic(
             run_id=run_id,
@@ -473,7 +473,7 @@ class MainAgentGateway:
                         digest_lines.append("Recent Chat:\n" + "\n".join(recent_turns))
 
                     sys_prompt = (
-                        "You are Main Agent of Libra Research answering a follow-up question from the investigator. "
+                        "You are Boss Agent of Libra Research answering a follow-up question from the investigator. "
                         "Answer strictly in Chinese if the user writes in Chinese (otherwise English), grounded in the run state below. "
                         "Be concise, factual, and direct; if the run failed or stopped, clearly explain the failure/stop reason and how they can ask follow-up questions or send '重新复现' to rerun."
                     )
@@ -528,13 +528,13 @@ class MainAgentGateway:
             )
             if is_zh:
                 return (
-                    f"**Main Agent 诊断说明{ctx_note}**\n\n"
+                    f"**Boss Agent 诊断说明{ctx_note}**\n\n"
                     f"- **当前状态**：`{status}`\n"
                     f"- **原因记录**：{reason_line}\n"
                     "- **后续操作**：你可以继续直接向我追问，或发送 `重新复现` / 上传补充文件重新发起实验。"
                 )
             return (
-                f"**Main Agent Diagnostic Summary{ctx_note}**\n\n"
+                f"**Boss Agent Diagnostic Summary{ctx_note}**\n\n"
                 f"- **Run status**: `{status}`\n"
                 f"- **Recorded reason**: {reason_line}\n"
                 "- **Next step**: Ask follow-up questions here or send `rerun` to start a fresh reproduction."
@@ -551,7 +551,7 @@ class MainAgentGateway:
         ev_items = (snap.evidence if snap else []) or []
         debates = (snap.debates if snap else []) or []
         ctx_note = f" (Context: `{selected_ctx.kind}:{selected_ctx.id}`)" if selected_ctx else ""
-        parts = [f"**Main Agent Read-Only Summary{ctx_note}**:"]
+        parts = [f"**Boss Agent Read-Only Summary{ctx_note}**:"]
         if debates:
             d = debates[-1]
             parts.append(

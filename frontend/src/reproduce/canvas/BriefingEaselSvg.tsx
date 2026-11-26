@@ -5,6 +5,9 @@ interface BriefingEaselSvgProps {
   cy: number;
   topic: string;
   motionDisabled: boolean;
+  isDragging?: boolean;
+  suppressClickRef?: React.MutableRefObject<boolean>;
+  onPointerDown?: (e: React.PointerEvent<SVGGElement>) => void;
   onPointerEnter?: (e: React.PointerEvent<SVGGElement>) => void;
   onPointerLeave?: () => void;
   onClick?: () => void;
@@ -20,6 +23,9 @@ export const BriefingEaselSvg: React.FC<BriefingEaselSvgProps> = ({
   cy,
   topic,
   motionDisabled,
+  isDragging = false,
+  suppressClickRef,
+  onPointerDown,
   onPointerEnter,
   onPointerLeave,
   onClick,
@@ -33,15 +39,17 @@ export const BriefingEaselSvg: React.FC<BriefingEaselSvgProps> = ({
 
   return (
     <g
-      className={`rep-briefing-easel ${motionDisabled ? 'is-motion-disabled' : ''}`}
+      className={`rep-briefing-easel ${motionDisabled ? 'is-motion-disabled' : ''} ${isDragging ? 'is-dragging' : ''}`}
       data-testid="briefing-easel"
       role="button"
       tabIndex={0}
       aria-label={`Presentation whiteboard: ${topic}`}
+      onPointerDown={onPointerDown}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       onClick={(e) => {
         e.stopPropagation();
+        if (suppressClickRef?.current) return;
         onClick?.();
       }}
       onKeyDown={(e) => {

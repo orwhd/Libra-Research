@@ -82,25 +82,25 @@ function pickLiveStageTicker(activityItems: ChatActivityMessage[]): string {
   for (let i = activityItems.length - 1; i >= 0; i -= 1) {
     const t = activityItems[i].text.toLowerCase();
     if (t.includes('report') || t.includes('pdf') || t.includes('docx')) {
-      return 'Compiling final PDF report...';
+      return 'Compiling final PDF report';
     }
     if (t.includes('evidence') || t.includes('audit') || t.includes('validation') || t.includes('debate')) {
-      return 'Validating experimental evidence...';
+      return 'Validating experimental evidence';
     }
     if (t.includes('round 2') || t.includes('ablation') || t.includes('analysis #3')) {
-      return 'Running Round 2 robustness checks...';
+      return 'Running Round 2 robustness checks';
     }
     if (t.includes('round 1') || t.includes('analysis') || t.includes('experiment')) {
-      return 'Running reproduction experiments...';
+      return 'Running reproduction experiments';
     }
     if (t.includes('data') || t.includes('manifest') || t.includes('dossier')) {
-      return 'Preparing data & benchmark setup...';
+      return 'Preparing data & benchmark setup';
     }
     if (t.includes('paper')) {
-      return 'Analyzing paper & methodology...';
+      return 'Analyzing paper & methodology';
     }
   }
-  return 'Analyzing paper & coordinating experiments...';
+  return 'Analyzing paper & coordinating experiments';
 }
 
 function formatToolEventTicker(ev: HarnessEvent): string {
@@ -865,7 +865,7 @@ export const ReproduceWorkspace: React.FC<ReproduceWorkspaceProps> = ({
                         <span>Human Intervention Requested</span>
                       </span>
                       <span className="rep-hic-from">
-                        {activeIntervention.from_labels.join(' & ')} → Main
+                        {activeIntervention.from_labels.join(' & ')} → Boss
                       </span>
                     </div>
                     <div className="rep-hic-dissent markdown-body">
@@ -1112,7 +1112,7 @@ export const ReproduceWorkspace: React.FC<ReproduceWorkspaceProps> = ({
                 )}
 
                 <label htmlFor="rep-chat-textarea" className="visually-hidden">
-                  Research command or question for Main Agent
+                  Research command or question for Boss Agent
                 </label>
                 <textarea
                   ref={chatInputRef}
@@ -1121,8 +1121,8 @@ export const ReproduceWorkspace: React.FC<ReproduceWorkspaceProps> = ({
                   data-testid="reproduce-chat-input"
                   placeholder={
                     isPausedForHuman
-                      ? 'Reply with your decision for the debating agents...'
-                      : 'Ask anything...'
+                      ? 'Reply with your decision for the agents'
+                      : 'Ask anything'
                   }
                   value={prompt}
                   disabled={submitting}
@@ -1185,7 +1185,7 @@ export const ReproduceWorkspace: React.FC<ReproduceWorkspaceProps> = ({
                       className="chat-send-btn rep-composer-pause-btn"
                       data-testid="reproduce-stop-btn"
                       aria-label={cancelling ? 'Stopping run' : 'Pause run'}
-                      title={cancelling ? 'Stopping...' : 'Stop current run'}
+                      title={cancelling ? 'Stopping' : 'Stop current run'}
                       disabled={cancelling}
                       onClick={() => void handleCancelRun()}
                     >
@@ -1196,7 +1196,7 @@ export const ReproduceWorkspace: React.FC<ReproduceWorkspaceProps> = ({
                       type="submit"
                       className="btn-primary chat-send-btn"
                       data-testid="reproduce-chat-send"
-                      aria-label={submitting ? 'Running' : 'Send command to Main Agent'}
+                      aria-label={submitting ? 'Running' : 'Send command to Boss Agent'}
                       disabled={
                         submitting ||
                         uploadingFile ||
@@ -1229,6 +1229,7 @@ export const ReproduceWorkspace: React.FC<ReproduceWorkspaceProps> = ({
         />
 
         <LivingResearchCanvas
+          runId={activeCanvasState.runId}
           mode={activeCanvasState.mode}
           isHistoricalReplay={replayProjected !== null}
           replaySeq={replaySeq}

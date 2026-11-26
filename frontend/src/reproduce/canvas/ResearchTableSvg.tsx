@@ -3,9 +3,15 @@ import { HOME_ANCHORS_WORLD, type ActiveTableVisual } from './CollaborationProje
 
 export const SAMPLE_POINTS = 64;
 const AGENT_SEAT_CLEARANCE = 64; // Keeps agent head + hanging name/status label clear of table perimeter
-const SEAT_CLEARANCE_X = 68;
-const SEAT_CLEARANCE_TOP = 64;
-const SEAT_CLEARANCE_BOTTOM = 54;
+const BASE_SEAT_CLEARANCE_X = 64;
+/** Agent node box in world units at scale 1 (head + hanging name label), used for tight seating. */
+const AGENT_BOX_HALF_W = 58;
+const AGENT_BOX_TOP = 62;
+const AGENT_BOX_BOTTOM = 70;
+/** Normalized ellipse distance the agent box must keep from the table centre (1 = touching). */
+const SEAT_BOX_MARGIN_NORM = 1.12;
+const BASE_SEAT_CLEARANCE_TOP = 76;
+const BASE_SEAT_CLEARANCE_BOTTOM = 66;
 
 export type TableShapeKind = 'rectangle' | 'circle' | 'ellipse';
 
@@ -29,6 +35,18 @@ function hashCollaborationSeed(id: string): number {
  * with deterministic collaboration_id-seeded pen irregularity (±2.1 world units).
  * Equal point count guarantees smooth continuous path morphing without unmounting `<path>`.
  */
+/** Single source of truth for table half-extents (placement, seats, and drawn perimeter). */
+export function getTableDims(memberCount: number): { rx: number; ry: number } {
+  const shape = getTableShapeKind(memberCount);
+  if (shape === 'rectangle') return { rx: 46, ry: 26 };
+  if (shape === 'circle') {
+    const r = memberCount === 3 ? 50 : 60;
+    return { rx: r, ry: r };
+  }
+  const extra = Math.max(0, memberCount - 6);
+  return { rx: 88 + extra * 14, ry: 52 + extra * 10 };
+}
+
 export function sampleTablePerimeter(
   cx: number,
   cy: number,
@@ -43,25 +61,17 @@ export function sampleTablePerimeter(
     const cos = Math.cos(theta);
     const sin = Math.sin(theta);
 
+    const dims = getTableDims(memberCount);
     let bx = 0;
     let by = 0;
     if (shape === 'rectangle') {
-      // Rounded superellipse p=5 approximating 160x74 hand-drawn rectangular table (§20.2)
-      const hw = 80;
-      const hh = 37;
+      // Rounded superellipse approximating a hand-drawn rectangular table (§20.2)
       const exp = 2 / 4.6;
-      bx = Math.sign(cos) * Math.pow(Math.abs(cos), exp) * hw;
-      by = Math.sign(sin) * Math.pow(Math.abs(sin), exp) * hh;
-    } else if (shape === 'circle') {
-      const r = memberCount === 3 ? 78 : 88;
-      bx = cos * r;
-      by = sin * r;
+      bx = Math.sign(cos) * Math.pow(Math.abs(cos), exp) * dims.rx;
+      by = Math.sign(sin) * Math.pow(Math.abs(sin), exp) * dims.ry;
     } else {
-      const extra = Math.max(0, memberCount - 6);
-      const rx = 126 + extra * 14;
-      const ry = 74 + extra * 10;
-      bx = cos * rx;
-      by = sin * ry;
+      bx = cos * dims.rx;
+      by = sin * dims.ry;
     }
 
     const wobble =
@@ -100,8 +110,12 @@ export interface TablePlacement {
 export function computeTablePlacements(
   tables: ActiveTableVisual[],
   allPersonaIds: string[],
-  homeAnchorsById: Record<string, { x: number; y: number }> = HOME_ANCHORS_WORLD
+  homeAnchorsById: Record<string, { x: number; y: number }> = HOME_ANCHORS_WORLD,
+  clearanceScale = 1
 ): TablePlacement[] {
+  const SEAT_CLEARANCE_X = BASE_SEAT_CLEARANCE_X * clearanceScale;
+  const SEAT_CLEARANCE_TOP = BASE_SEAT_CLEARANCE_TOP * clearanceScale;
+  const SEAT_CLEARANCE_BOTTOM = BASE_SEAT_CLEARANCE_BOTTOM * clearanceScale;
   const draftTables: {
     tbl: ActiveTableVisual;
     members: string[];
@@ -111,23 +125,16 @@ export function computeTablePlacements(
     cy: number;
     rx: number;
     ry: number;
+    minCy: number;
+    maxCy: number;
   }[] = [];
 
   for (const tbl of tables) {
     const members = tbl.participant_persona_ids;
     const count = members.length;
     const shapeKind = getTableShapeKind(count);
-    let tableRx = 80;
-    let tableRy = 37;
-    if (shapeKind === 'circle') {
-      const r = count === 3 ? 78 : 88;
-      tableRx = r;
-      tableRy = r;
-    } else if (shapeKind === 'ellipse') {
-      const extra = Math.max(0, count - 6);
-      tableRx = 126 + extra * 14;
-      tableRy = 74 + extra * 10;
-    }
+    // Compact tables keep seated collaborators visibly close to each other
+    const { rx: tableRx, ry: tableRy } = getTableDims(count);
 
     // Centroid of participating personas' home anchors (including dynamic multi-instance workers)
     let sumX = 0;
@@ -139,8 +146,11 @@ export function computeTablePlacements(
     }
     const minCx = Math.min(540, 306 + tableRx + SEAT_CLEARANCE_X - 8);
     const maxCx = Math.max(660, 940 - tableRx - SEAT_CLEARANCE_X + 8);
-    const minCy = 198;
-    const maxCy = 415;
+    // Keep the whole seated ring (not just the table) inside the stage so seats are never clamped into the table
+    const ringTop = tableRy + (count >= 3 ? SEAT_CLEARANCE_TOP : 0);
+    const ringBottom = tableRy + (count >= 3 ? SEAT_CLEARANCE_BOTTOM : 0);
+    const minCy = Math.min(300, Math.max(198, 62 * clearanceScale + ringTop + 4));
+    const maxCy = Math.max(300, Math.min(415, 600 - 74 * clearanceScale - ringBottom - 4));
     const baseCx = Math.max(minCx, Math.min(maxCx, sumX / Math.max(1, count)));
     const baseCy = Math.max(minCy, Math.min(maxCy, sumY / Math.max(1, count)));
 
@@ -164,7 +174,7 @@ export function computeTablePlacements(
           const h = homeAnchorsById[pid] || HOME_ANCHORS_WORLD[pid];
           if (!h) continue;
           const d = Math.hypot(cx - h.x, cy - h.y);
-          if (d < 165) cost += (165 - d) * 3.4;
+          if (d < 240) cost += (240 - d) * 3.4;
         }
         for (const prev of draftTables) {
           const minDx = tableRx + prev.rx + 124;
@@ -190,6 +200,8 @@ export function computeTablePlacements(
       cy: bestCy,
       rx: tableRx,
       ry: tableRy,
+      minCy,
+      maxCy,
     });
   }
 
@@ -211,9 +223,9 @@ export function computeTablePlacements(
         if (norm < 1) {
           const push = (1 / Math.max(0.08, norm) - 1) * 0.5;
           a.cx = Math.max(440, Math.min(800, a.cx - dx * push));
-          a.cy = Math.max(185, Math.min(425, a.cy - dy * push));
+          a.cy = Math.max(a.minCy, Math.min(a.maxCy, a.cy - dy * push));
           b.cx = Math.max(440, Math.min(800, b.cx + dx * push));
-          b.cy = Math.max(185, Math.min(425, b.cy + dy * push));
+          b.cy = Math.max(b.minCy, Math.min(b.maxCy, b.cy + dy * push));
         }
       }
     }
@@ -223,21 +235,32 @@ export function computeTablePlacements(
   for (const dt of draftTables) {
     const { tbl, members, count, shapeKind, cx: bestCx, cy: bestCy, rx: tableRx, ry: tableRy } = dt;
     const candidateSeats: { x: number; y: number; angle: number }[] = [];
+    // Tight seating: walk outward along each seat angle until the agent's full box
+    // (head + hanging name label) clears the table perimeter by a small margin.
+    const halfW = AGENT_BOX_HALF_W * clearanceScale;
+    const boxTop = AGENT_BOX_TOP * clearanceScale;
+    const boxBottom = AGENT_BOX_BOTTOM * clearanceScale;
+    const seatAt = (a: number) => {
+      const ux = Math.cos(a);
+      const uy = Math.sin(a);
+      for (let t = Math.min(tableRx, tableRy); t < 600; t += 2) {
+        const sx = bestCx + ux * t * (tableRx / Math.max(tableRx, tableRy));
+        const sy = bestCy + uy * t * (tableRy / Math.max(tableRx, tableRy));
+        const qx = Math.max(sx - halfW, Math.min(bestCx, sx + halfW));
+        const qy = Math.max(sy - boxTop, Math.min(bestCy, sy + boxBottom));
+        if (Math.hypot((qx - bestCx) / tableRx, (qy - bestCy) / tableRy) >= SEAT_BOX_MARGIN_NORM) {
+          return { x: sx, y: sy, angle: a };
+        }
+      }
+      return { x: bestCx + ux * (tableRx + SEAT_CLEARANCE_X), y: bestCy + uy * (tableRy + SEAT_CLEARANCE_TOP), angle: a };
+    };
     if (shapeKind === 'rectangle') {
-      const seatRx = tableRx + SEAT_CLEARANCE_X;
-      candidateSeats.push({ x: bestCx - seatRx, y: bestCy, angle: Math.PI });
-      candidateSeats.push({ x: bestCx + seatRx, y: bestCy, angle: 0 });
+      candidateSeats.push(seatAt(Math.PI));
+      candidateSeats.push(seatAt(0));
     } else {
-      const seatRx = tableRx + SEAT_CLEARANCE_X;
       const startAngle = -Math.PI / 2;
       for (let i = 0; i < count; i += 1) {
-        const a = startAngle + (i / count) * Math.PI * 2;
-        const seatRy = tableRy + (Math.sin(a) < 0 ? SEAT_CLEARANCE_TOP : SEAT_CLEARANCE_BOTTOM);
-        candidateSeats.push({
-          x: bestCx + Math.cos(a) * seatRx,
-          y: bestCy + Math.sin(a) * seatRy,
-          angle: a,
-        });
+        candidateSeats.push(seatAt(startAngle + (i / count) * Math.PI * 2));
       }
     }
 
@@ -257,8 +280,8 @@ export function computeTablePlacements(
       }
       usedSeatIdx.add(chosen);
       seatsByPersona[pid] = {
-        x: Math.max(306, Math.min(940, candidateSeats[chosen].x)),
-        y: Math.max(66, Math.min(530, candidateSeats[chosen].y)),
+        x: Math.max(306, Math.min(1000 - 74 * clearanceScale, candidateSeats[chosen].x)),
+        y: Math.max(62 * clearanceScale, Math.min(600 - 74 * clearanceScale, candidateSeats[chosen].y)),
       };
     }
 
@@ -280,7 +303,13 @@ interface ResearchTableSvgProps {
   table: ActiveTableVisual;
   placement: TablePlacement;
   motionDisabled: boolean;
+  isDragging?: boolean;
+  suppressClickRef?: React.MutableRefObject<boolean>;
   onSilentSelectTable: (table: ActiveTableVisual) => void;
+  onTablePointerDown?: (
+    table: ActiveTableVisual,
+    e: React.PointerEvent<SVGGElement>
+  ) => void;
   onTablePointerEnter?: (
     table: ActiveTableVisual,
     placement: TablePlacement,
@@ -299,7 +328,10 @@ export const ResearchTableSvg: React.FC<ResearchTableSvgProps> = ({
   table,
   placement,
   motionDisabled,
+  isDragging = false,
+  suppressClickRef,
   onSilentSelectTable,
+  onTablePointerDown,
   onTablePointerEnter,
   onTablePointerLeave,
 }) => {
@@ -345,7 +377,7 @@ export const ResearchTableSvg: React.FC<ResearchTableSvgProps> = ({
 
   // Continuous 64-point morph whenever member count or center updates (`UI-05`, `UI-06`, `ui.table-morph-no-remount`)
   useEffect(() => {
-    if (motionDisabled) {
+    if (motionDisabled || isDragging) {
       currentPtsRef.current = targetPts;
       pathRef.current?.setAttribute('d', pointsToSvgPath(targetPts));
       return undefined;
@@ -372,7 +404,7 @@ export const ResearchTableSvg: React.FC<ResearchTableSvgProps> = ({
 
     raf = window.requestAnimationFrame(animateMorph);
     return () => window.cancelAnimationFrame(raf);
-  }, [targetPts, motionDisabled]);
+  }, [targetPts, motionDisabled, isDragging]);
 
   const initialD = useMemo(() => pointsToSvgPath(currentPtsRef.current), []);
   const cx = placement.cx;
@@ -380,16 +412,18 @@ export const ResearchTableSvg: React.FC<ResearchTableSvgProps> = ({
 
   return (
     <g
-      className="rep-table-group"
+      className={`rep-table-group ${isDragging ? 'is-dragging' : ''}`}
       data-testid={`research-table-${table.collaboration_id}`}
       data-collaboration-id={table.collaboration_id}
       data-table-shape={placement.shapeKind}
       data-member-count={table.participant_persona_ids.length}
       style={{ opacity: sketchProgress > 0 ? 1 : 0 }}
+      onPointerDown={(e) => onTablePointerDown?.(table, e)}
       onPointerEnter={(e) => onTablePointerEnter?.(table, placement, e)}
       onPointerLeave={() => onTablePointerLeave?.(table)}
       onClick={(e) => {
         e.stopPropagation();
+        if (suppressClickRef?.current) return;
         onSilentSelectTable(table);
       }}
     >

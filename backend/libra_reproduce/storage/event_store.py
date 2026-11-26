@@ -1027,7 +1027,10 @@ class EventStore:
         def _label(pid: str | None) -> str:
             if not pid:
                 return "Agent"
-            return persona_labels.get(pid) or pid.replace("persona_", "").replace("_", " #").title()
+            raw = persona_labels.get(pid)
+            if pid == "persona_main" and (not raw or raw.strip().lower() in ("main", "main agent")):
+                return "Boss"
+            return raw or pid.replace("persona_", "").replace("_", " #").title()
 
         # 1. Extract collaboration windows & chronological start-to-end dialogues
         collab_order: list[str] = []
@@ -1158,10 +1161,10 @@ class EventStore:
                         {
                             "seq": ev.seq,
                             "speaker_id": from_ids[0] if from_ids else "persona_validation",
-                            "speaker_label": f"{', '.join(from_labels)} (Email → Main)",
+                            "speaker_label": f"{', '.join(from_labels)} (Email → Boss)",
                             "stance": "escalate",
                             "summary": (
-                                f"Sent intervention email to Main: "
+                                f"Sent intervention email to Boss: "
                                 f"{str(pl.get('question') or 'Requesting human guidance on methodological dissent.')}"
                             ),
                         }
@@ -1191,7 +1194,7 @@ class EventStore:
                                     "speaker_id": "persona_main",
                                     "speaker_label": _label("persona_main"),
                                     "stance": "human_guidance",
-                                    "summary": f"Human guidance relayed by Main: {user_dec}",
+                                    "summary": f"Human guidance relayed by Boss: {user_dec}",
                                 }
                             )
                 continue
@@ -1334,11 +1337,11 @@ class EventStore:
                 {
                     "step_id": "step_main_init",
                     "status": "done" if main_done else "working",
-                    "actor_label": "Main agent",
+                    "actor_label": "Boss agent",
                     "text": (
-                        "Main agent read uploaded files and dispatched specialists"
+                        "Boss agent read uploaded files and dispatched specialists"
                         if main_done
-                        else "Main agent reading files, extracting context & calling specialists..."
+                        else "Boss agent reading files, extracting context & calling specialists..."
                     ),
                     "artifact_ids": [],
                     "snapshot_seq": first_task_seq,
@@ -1442,11 +1445,11 @@ class EventStore:
                 {
                     "step_id": "step_main_summary",
                     "status": "done" if run_completed_ev else "working",
-                    "actor_label": "Main agent",
+                    "actor_label": "Boss agent",
                     "text": (
-                        "Main agent summarized findings, final PDF report & reproducible scripts"
+                        "Boss agent summarized findings, final PDF report & reproducible scripts"
                         if run_completed_ev
-                        else "Main agent & Support compiling final PDF report and scripts..."
+                        else "Boss agent & Support compiling final PDF report and scripts..."
                     ),
                     "artifact_ids": deliverables if run_completed_ev else [],
                     "snapshot_seq": run_completed_ev.seq if run_completed_ev else events[-1].seq,
@@ -1492,7 +1495,7 @@ class EventStore:
                         custom_summary = prev.summary
                         break
             if not custom_summary:
-                custom_summary = f"{_label(pid)} briefed Main Agent at the whiteboard on {topic}."
+                custom_summary = f"{_label(pid)} briefed Boss Agent at the whiteboard on {topic}."
 
             if (
                 briefing_groups
@@ -1557,7 +1560,7 @@ class EventStore:
                     "seq": first_task_seq,
                     "kind": "run_start",
                     "label": "Dispatch",
-                    "reason": "Main agent read uploaded files and dispatched Paper & Data specialists.",
+                    "reason": "Boss agent read uploaded files and dispatched Paper & Data specialists.",
                     "report": "",
                     "collaboration_id": None,
                     "briefing_id": None,

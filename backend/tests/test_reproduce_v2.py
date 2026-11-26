@@ -414,8 +414,8 @@ async def test_end_to_end_simulation_idempotency_contracts_and_sse_resume(tmp_pa
         )
 
         chat_steps = tl["chat_steps"]
-        assert chat_steps[0]["actor_label"] == "Main agent"
-        assert chat_steps[-1]["actor_label"] == "Main agent"
+        assert chat_steps[0]["actor_label"] == "Boss agent"
+        assert chat_steps[-1]["actor_label"] == "Boss agent"
         assert any(len(st["artifact_ids"]) >= 1 for st in chat_steps)
 
         # 7. Silent read-only message filtering & inquiry
@@ -551,7 +551,7 @@ async def test_human_intervention_dissent_email_and_resume() -> None:
             target_ids=["persona_main"],
             subject=EventSubject(kind="debate", id=debate_id),
             status="waiting",
-            summary="Debating agents sent intervention email to Main: estimator conflict.",
+            summary="Debating agents sent intervention email to Boss: estimator conflict.",
             payload={
                 "intervention_id": "int_test_01",
                 "debate_id": debate_id,
@@ -601,4 +601,4 @@ async def test_human_intervention_dissent_email_and_resume() -> None:
         main_guidance_turns = [t for t in turns if t["speaker_id"] == "persona_main" and t["stance"] == "human_guidance"]
         assert len(main_guidance_turns) == 1
         escalate_turns = [t for t in turns if t["stance"] == "escalate"]
-        assert len(escalate_turns) == 1 and escalate_turns[0]["summary"].startswith("Sent intervention email to Main:")
+        assert len(escalate_turns) == 1 and escalate_turns[0]["summary"].startswith("Sent intervention email to Boss:")

@@ -35,6 +35,25 @@ from .scheduler import ResourceScheduler
 from .sdk_adapter import SDKAdapter
 
 
+def _short_title(title: str, max_chars: int = 60) -> str:
+    """Shorten a paper title for UI copy at a clean boundary (subtitle colon, parenthesis, or word) without ellipses."""
+    t = " ".join(str(title or "").split())
+    if len(t) <= max_chars:
+        return t
+    for sep in (":", " (", " — ", " - "):
+        idx = t.find(sep)
+        if 16 <= idx <= max_chars:
+            return t[:idx].strip()
+    cut = t[:max_chars]
+    sp = cut.rfind(" ")
+    if sp > 16:
+        cut = cut[:sp]
+    words = cut.rstrip(" ,;:&-(").split()
+    while len(words) > 3 and words[-1].lower() in {"and", "or", "of", "the", "a", "an", "for", "in", "on", "to", "with", "&"}:
+        words.pop()
+    return " ".join(words).strip()
+
+
 def _dedup(items: list[str]) -> list[str]:
     return list(dict.fromkeys(x for x in items if x))
 
@@ -332,9 +351,9 @@ class ResearchCoordinator:
             )
 
         desc = (
-            f"Main dynamically spawned {persona.label} ({persona.role}): {specialty}."
+            f"Boss dynamically spawned {persona.label} ({persona.role}): {specialty}."
             if specialty
-            else f"Main dynamically spawned {persona.label} ({persona.role}) for parallel execution."
+            else f"Boss dynamically spawned {persona.label} ({persona.role}) for parallel execution."
         )
         ev = self.store.append_event(
             run_id,
@@ -747,7 +766,7 @@ class ResearchCoordinator:
                         t_paper,
                         "task.completed",
                         "done",
-                        f"Paper specification registered for '{shared_state['paper_spec']['paper_title'][:80]}'.",
+                        f"Paper specification registered for '{_short_title(shared_state['paper_spec']['paper_title'], 80)}'.",
                         persona_id="persona_paper",
                         mode=mode,
                     )
@@ -926,7 +945,7 @@ class ResearchCoordinator:
                 briefing_label="Setup Brief",
                 topic="Paper Spec & Data Protocol",
                 summary=(
-                    f"Paper & Data briefed Main on '{paper_spec['paper_title'][:70]}' "
+                    f"Paper & Data briefed Boss on '{_short_title(paper_spec['paper_title'], 70)}' "
                     f"({shared_state['data_manifest'].get('dataset_kind', 'controlled_benchmark')}, "
                     f"{len(paper_spec.get('core_claims') or [])} testable claim(s))."
                 ),
@@ -973,7 +992,7 @@ class ResearchCoordinator:
                         t_analysis,
                         "task.started",
                         "running",
-                        f"Analysis Agent acquiring parallel experiment slot #1 for Round 1 reproduction of '{paper_spec['paper_title'][:60]}'.",
+                        f"Analysis Agent acquiring parallel experiment slot #1 for Round 1 reproduction of '{_short_title(paper_spec['paper_title'], 60)}'.",
                         persona_id="persona_analysis",
                         mode=mode,
                     )
@@ -1049,7 +1068,7 @@ class ResearchCoordinator:
                             {
                                 "kind": "recorded_finding",
                                 "round_id": "round1",
-                                "hypothesis": f"Core reproduction of {paper_spec['paper_title'][:80]}",
+                                "hypothesis": f"Core reproduction of {_short_title(paper_spec['paper_title'], 80)}",
                                 "method": "Simulated controlled scaling benchmark",
                                 "primary_metric": "effect_delta",
                                 "quantitative_result": f"mean_effect_delta={r1['summary']['mean_effect_delta']}, scaling_slope={r1['summary']['scaling_slope']}",
@@ -1165,7 +1184,7 @@ class ResearchCoordinator:
                     mode=mode,
                 )
 
-                debate_claim = f"Methodological robustness & alternative explanations for '{paper_spec['paper_title'][:90]}'"
+                debate_claim = f"Methodological robustness & alternative explanations for '{_short_title(paper_spec['paper_title'], 90)}'"
                 debate_id, _ = self.collab.open_debate(
                     run_id,
                     claim_id="claim_robustness_validation",
@@ -1178,7 +1197,7 @@ class ResearchCoordinator:
                     run_id,
                     kind="debate",
                     participant_persona_ids=["persona_analysis", "persona_validation"],
-                    topic=f"Robustness review: {paper_spec['paper_title'][:60]}",
+                    topic=f"Robustness review: {_short_title(paper_spec['paper_title'], 60)}",
                     source_ref=SourceRef(kind="debate", id=debate_id),
                     actor_id="persona_validation",
                     summary="Analysis and Validation convened a 2-person review table on Round 1 experimental evidence.",
@@ -1312,7 +1331,7 @@ class ResearchCoordinator:
                         target_ids=["persona_main"],
                         subject=EventSubject(kind="debate", id=debate_id),
                         status="waiting",
-                        summary=f"Debating agents sent intervention email to Main: {clean_dissent}",
+                        summary=f"Debating agents sent intervention email to Boss: {clean_dissent}",
                         payload={
                             "intervention_id": int_id,
                             "debate_id": debate_id,
@@ -1380,7 +1399,7 @@ class ResearchCoordinator:
                 # Expand 2p -> 3p circular Research Pod
                 pod_id, _ = self.collab.start_pod(
                     run_id,
-                    research_question=f"Do core findings of '{paper_spec['paper_title'][:70]}' hold under Round 2 ablations, null tests & stress checks?",
+                    research_question=f"Do core findings of '{_short_title(paper_spec['paper_title'], 70)}' hold under Round 2 ablations, null tests & stress checks?",
                     members=["persona_analysis", "persona_validation", "persona_data"],
                     budget_fraction=0.12,
                     actor_id="persona_validation",
@@ -1691,7 +1710,7 @@ class ResearchCoordinator:
                 self._transition_persona(run_id, val_2_id, "working", "auditing_evidence_gate", mode=mode)
 
                 resolution_text = (
-                    f"Completed multi-round experimental synthesis for '{paper_spec['paper_title'][:80]}': "
+                    f"Completed multi-round experimental synthesis for '{_short_title(paper_spec['paper_title'], 80)}': "
                     f"{len([t for t in shared_state['executed_trials'] if t.get('ok')])} clean Python script(s), "
                     f"{len(all_tables)} CSV table(s), and {len(valid_figs)} verified PNG figure(s)."
                 )
@@ -1827,7 +1846,7 @@ class ResearchCoordinator:
                     reason="reporting_to_main",
                     briefing_label="Validation Brief",
                     topic="Evidence Gate & Robustness Audit",
-                    summary=f"Validation briefed Main on Evidence Gate verdict: {ev_review.result.upper()} ({ev_review.reproduction_level_verified}). {resolution_text}",
+                    summary=f"Validation briefed Boss on Evidence Gate verdict: {ev_review.result.upper()} ({ev_review.reproduction_level_verified}). {resolution_text}",
                     linked_step_ids=["step_validation_gate"],
                     artifact_ids=dedup_art_ids[:4],
                     mode=mode,
@@ -1913,7 +1932,7 @@ class ResearchCoordinator:
                 reason="presenting_final_report",
                 briefing_label="Final Brief",
                 topic="Final PDF Report & Reproducible Scripts",
-                summary=f"Support presented final PDF & Word reports ({ev_review.reproduction_level_verified} · {ev_review.result.upper()}) with reproducible Python scripts to Main.",
+                summary=f"Support presented final PDF & Word reports ({ev_review.reproduction_level_verified} · {ev_review.result.upper()}) with reproducible Python scripts to Boss.",
                 linked_step_ids=["step_main_summary"],
                 artifact_ids=report_ids,
                 mode=mode,
@@ -2074,7 +2093,7 @@ class ResearchCoordinator:
             collaboration_id=cid,
             outcome="synthesized",
             actor_id="persona_main",
-            summary="Roundtable synthesis delivered to Main; participants returned to anchors.",
+            summary="Roundtable synthesis delivered to Boss; participants returned to anchors.",
             mode=mode,
         )
         for m in _dedup(["persona_main", *members]):
@@ -2287,7 +2306,7 @@ class ResearchCoordinator:
             topic=f"Parallel cross-check ({len(table_members)} specialists)",
             source_ref=SourceRef(kind="collaboration", id=f"dyn_{uuid.uuid4().hex[:6]}"),
             actor_id="persona_main",
-            summary=f"Main convened {len(table_members)} specialists for parallel synthesis.",
+            summary=f"Boss convened {len(table_members)} specialists for parallel synthesis.",
             mode=mode,
         )
         for m in table_members:
@@ -2299,7 +2318,7 @@ class ResearchCoordinator:
             collaboration_id=cid,
             outcome="synthesized",
             actor_id="persona_main",
-            summary="Dynamic specialist team synthesis delivered to Main.",
+            summary="Dynamic specialist team synthesis delivered to Boss.",
             mode=mode,
         )
         for pid in self.store.list_persona_ids(run_id):
@@ -2311,7 +2330,7 @@ class ResearchCoordinator:
             kind="message",
             role="main",
             text=(
-                f"Main Agent dynamically spawned `{len(spawned_ids)}` specialist agent instance(s) "
+                f"Boss Agent dynamically spawned `{len(spawned_ids)}` specialist agent instance(s) "
                 f"({', '.join(f'`{p}`' for p in spawned_ids)}) and executed isolated Python follow-up experiments for **\"{user_prompt[:100]}\"**:\n\n"
                 f"{details_block}"
             ),
