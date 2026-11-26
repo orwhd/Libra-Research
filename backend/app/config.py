@@ -40,6 +40,10 @@ LLM_MODEL = (
     or os.getenv("DEEPSEEK_MODEL")
     or "deepseek-flash"
 ).strip()
+try:
+    LLM_MAX_CONCURRENCY = max(1, min(16, int(os.getenv("LLM_MAX_CONCURRENCY", "4"))))
+except ValueError:
+    LLM_MAX_CONCURRENCY = 4
 
 OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "").strip()
 OPENALEX_EMAIL = os.getenv("OPENALEX_EMAIL", "").strip()

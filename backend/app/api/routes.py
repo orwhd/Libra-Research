@@ -170,6 +170,7 @@ async def put_llm_settings(req: UpdateLLMSettingsRequest) -> LLMSettingsResponse
             model=req.model,
             thinking_effort=req.thinking_effort,
             available_models=req.available_models,
+            max_concurrency=req.max_concurrency,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -181,6 +182,7 @@ async def patch_llm_selection(req: UpdateLLMSelectionRequest) -> LLMSettingsResp
     updated = update_user_llm_selection(
         model=req.model,
         thinking_effort=req.thinking_effort,
+        max_concurrency=req.max_concurrency,
     )
     return LLMSettingsResponse.model_validate(updated)
 

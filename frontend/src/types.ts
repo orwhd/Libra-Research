@@ -324,6 +324,7 @@ export interface LLMSettings {
   base_url: string;
   model: string;
   thinking_effort: ThinkingEffort;
+  max_concurrency: number;
   available_models: string[];
   api_key_masked: string;
   has_env_fallback: boolean;
@@ -335,6 +336,7 @@ export interface UpdateLLMSettingsPayload {
   base_url: string;
   model: string;
   thinking_effort: ThinkingEffort;
+  max_concurrency?: number;
   available_models: string[];
 }
 

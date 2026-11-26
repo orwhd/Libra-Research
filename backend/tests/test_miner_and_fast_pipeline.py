@@ -332,3 +332,58 @@ def test_instant_comment_save_and_v2_bridge_element_inspector() -> None:
     assert shot_resp.status_code == 200
     assert shot_resp.content.startswith(b"\x89PNG")
 
+
+@pytest.mark.asyncio
+async def test_llm_api_max_concurrency_semaphore_throttles_inflight_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from openai.resources.chat.completions import AsyncCompletions
+    from app.agents.llm_client import LLMClient
+    from app.main import app
+
+    client = TestClient(app)
+    put_resp = client.put(
+        "/api/settings/llm",
+        json={
+            "provider": "openai",
+            "api_key": "sk-test-secret-12345678abcd",
+            "base_url": "https://api.example.com/v1",
+            "model": "gpt-4o-mini",
+            "thinking_effort": "low",
+            "max_concurrency": 2,
+            "available_models": ["gpt-4o-mini"],
+        },
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.json()["max_concurrency"] == 2
+
+    state = {"inflight": 0, "peak": 0}
+
+    async def _slow_create(self: Any, **kwargs: Any) -> Any:
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
+        try:
+            await asyncio.sleep(0.04)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok"),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+        finally:
+            state["inflight"] -= 1
+
+    monkeypatch.setattr(AsyncCompletions, "create", _slow_create)
+
+    llm = LLMClient()
+    assert llm.max_concurrency == 2
+    results = await asyncio.gather(*(llm.complete_text("sys", f"req-{i}") for i in range(6)))
+    assert results == ["ok"] * 6
+    assert state["peak"] == 2
+
+

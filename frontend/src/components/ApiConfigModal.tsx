@@ -61,11 +61,14 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({
   const baseUrlInputId = useId();
   const modelInputId = useId();
   const modelDatalistId = useId();
+  const concurrencyInputId = useId();
+  const concurrencyHintId = useId();
 
   const [provider, setProvider] = useState('deepseek');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com');
   const [model, setModel] = useState('deepseek-chat');
+  const [maxConcurrency, setMaxConcurrency] = useState(4);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -79,6 +82,9 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({
     setApiKey('');
     setBaseUrl(settings?.base_url || 'https://api.deepseek.com');
     setModel(settings?.model || 'deepseek-chat');
+    setMaxConcurrency(
+      Math.max(1, Math.min(16, Number(settings?.max_concurrency) || 4))
+    );
     setAvailableModels(settings?.available_models || []);
     setShowKey(false);
     setStatusMsg(null);
@@ -171,6 +177,7 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({
         base_url: baseUrl.trim(),
         model: model.trim(),
         thinking_effort: settings?.thinking_effort || 'medium',
+        max_concurrency: maxConcurrency,
         available_models: availableModels,
       });
       setStatusMsg({ kind: 'ok', text: `Connected cleanly to ${res.model}.` });
@@ -215,6 +222,7 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({
         base_url: baseUrl.trim(),
         model: model.trim(),
         thinking_effort: settings?.thinking_effort || 'medium',
+        max_concurrency: maxConcurrency,
         available_models: availableModels,
       });
       onSaved(saved);
@@ -398,6 +406,41 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="api-field">
+            <div className="api-field-head">
+              <label htmlFor={concurrencyInputId} className="api-field-label">
+                Max Concurrency (API 并发数限制)
+              </label>
+              <span className="api-concurrency-badge">
+                {maxConcurrency} in-flight
+              </span>
+            </div>
+            <input
+              id={concurrencyInputId}
+              name="max_concurrency"
+              type="range"
+              min={1}
+              max={16}
+              step={1}
+              className="api-concurrency-range"
+              aria-describedby={concurrencyHintId}
+              style={
+                {
+                  '--progress': `${((maxConcurrency - 1) / 15) * 100}%`,
+                } as React.CSSProperties
+              }
+              value={maxConcurrency}
+              disabled={busy}
+              onChange={(e) => {
+                setMaxConcurrency(Number(e.target.value) || 4);
+                if (statusMsg) setStatusMsg(null);
+              }}
+            />
+            <span id={concurrencyHintId} className="api-field-hint">
+              Caps simultaneous in-flight LLM API requests (1–16) to avoid HTTP 429 rate limits.
+            </span>
           </div>
 
           {statusMsg && (

@@ -540,6 +540,86 @@ dialog.api-config-dialog::backdrop {
   font-weight: 650;
 }
 
+.api-concurrency-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.api-concurrency-range {
+  width: 100%;
+  margin: 4px 0 2px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.api-concurrency-range:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@supports not (accent-color: #2563eb) {
+  input[type="range"].api-concurrency-range {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+  }
+
+  input[type="range"].api-concurrency-range::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 8px;
+    background: linear-gradient(
+      to right,
+      var(--accent) var(--progress, 20%),
+      var(--border-strong) var(--progress, 20%)
+    );
+    border-radius: 4px;
+  }
+
+  input[type="range"].api-concurrency-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: -4px;
+  }
+
+  input[type="range"].api-concurrency-range::-moz-range-track {
+    width: 100%;
+    height: 8px;
+    background: var(--border-strong);
+    border-radius: 4px;
+  }
+
+  input[type="range"].api-concurrency-range::-moz-range-progress {
+    height: 8px;
+    background-color: var(--accent);
+    border-radius: 4px;
+  }
+
+  input[type="range"].api-concurrency-range::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+  }
+}
+
+.api-field-hint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .spin-icon {
     animation: spinIcon 0.9s linear infinite;

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
 from openai import AsyncOpenAI
 
-from ..services.api_settings import get_effective_llm_credentials
+from ..services.api_settings import (
+    get_effective_llm_concurrency,
+    get_effective_llm_credentials,
+)
 
 
 class LLMConfigurationError(RuntimeError):
@@ -48,6 +52,20 @@ _DEEPSEEK_BUDGET_BY_EFFORT: dict[str, int] = {
     "high": 8192,
 }
 
+# Process-wide per-event-loop API concurrency semaphores keyed by (loop_id, max_concurrency)
+_LOOP_CONCURRENCY_SEMS: dict[tuple[int, int], asyncio.Semaphore] = {}
+
+
+def _get_concurrency_semaphore(limit: int) -> asyncio.Semaphore:
+    clamped = max(1, min(16, int(limit or 4)))
+    lid = id(asyncio.get_running_loop())
+    key = (lid, clamped)
+    sem = _LOOP_CONCURRENCY_SEMS.get(key)
+    if sem is None:
+        sem = asyncio.Semaphore(clamped)
+        _LOOP_CONCURRENCY_SEMS[key] = sem
+    return sem
+
 
 class LLMClient:
     def __init__(self) -> None:
@@ -60,7 +78,13 @@ class LLMClient:
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=180.0)
         self.model = model
         self.thinking_effort = thinking_effort
+        self.max_concurrency = get_effective_llm_concurrency()
         self._is_deepseek = "deepseek" in base_url.lower() or "deepseek" in model.lower()
+
+    async def _throttled_create(self, **call_kwargs: Any) -> Any:
+        sem = _get_concurrency_semaphore(self.max_concurrency)
+        async with sem:
+            return await self.client.chat.completions.create(**call_kwargs)
 
     def _apply_thinking(
         self,
@@ -95,14 +119,14 @@ class LLMClient:
         active_effort = self._apply_thinking(kwargs, effort_override=effort_override)
 
         try:
-            resp = await self.client.chat.completions.create(**kwargs)
+            resp = await self._throttled_create(**kwargs)
         except Exception as exc:
             # Fallback if a custom OpenAI-compatible endpoint rejects extra_body / reasoning_effort / response_format
             kwargs.pop("extra_body", None)
             kwargs.pop("reasoning_effort", None)
             kwargs.pop("response_format", None)
             try:
-                resp = await self.client.chat.completions.create(**kwargs)
+                resp = await self._throttled_create(**kwargs)
             except Exception as exc2:
                 raise RuntimeError(f"LLM request failed: {exc} / {exc2}") from exc2
 
@@ -120,7 +144,7 @@ class LLMClient:
             low_kwargs["max_tokens"] = retry_tokens
             self._apply_thinking(low_kwargs, effort_override="low")
             try:
-                resp_low = await self.client.chat.completions.create(**low_kwargs)
+                resp_low = await self._throttled_create(**low_kwargs)
                 c_low, f_low = self._unpack_choice(resp_low)
                 if c_low and f_low != "length":
                     return c_low
@@ -140,7 +164,7 @@ class LLMClient:
             direct_kwargs.pop("extra_body", None)
 
         try:
-            resp_direct = await self.client.chat.completions.create(**direct_kwargs)
+            resp_direct = await self._throttled_create(**direct_kwargs)
             c_dir, f_dir = self._unpack_choice(resp_direct)
             if c_dir and f_dir != "length":
                 return c_dir
@@ -150,7 +174,7 @@ class LLMClient:
         except Exception:
             direct_kwargs.pop("extra_body", None)
             direct_kwargs.pop("response_format", None)
-            resp_bare = await self.client.chat.completions.create(**direct_kwargs)
+            resp_bare = await self._throttled_create(**direct_kwargs)
             c_bare, f_bare = self._unpack_choice(resp_bare)
             if c_bare and f_bare != "length":
                 return c_bare

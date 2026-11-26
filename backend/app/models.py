@@ -381,6 +381,7 @@ class LLMSettingsResponse(BaseModel):
     base_url: str
     model: str
     thinking_effort: ThinkingEffort = "medium"
+    max_concurrency: int = Field(default=4, ge=1, le=16)
     available_models: list[str] = Field(default_factory=list)
     api_key_masked: str = ""
     has_env_fallback: bool = False
@@ -392,12 +393,14 @@ class UpdateLLMSettingsRequest(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     model: str = Field(min_length=1, max_length=160)
     thinking_effort: ThinkingEffort = "medium"
+    max_concurrency: int | None = Field(default=None, ge=1, le=16)
     available_models: list[str] = Field(default_factory=list)
 
 
 class UpdateLLMSelectionRequest(BaseModel):
     model: str | None = Field(default=None, max_length=160)
     thinking_effort: ThinkingEffort | None = None
+    max_concurrency: int | None = Field(default=None, ge=1, le=16)
 
 
 class FetchModelsRequest(BaseModel):

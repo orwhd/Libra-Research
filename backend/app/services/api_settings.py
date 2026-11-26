@@ -5,10 +5,24 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, RUNTIME_DIR
+from ..config import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MAX_CONCURRENCY,
+    LLM_MODEL,
+    RUNTIME_DIR,
+)
 
 SETTINGS_FILE: Path = RUNTIME_DIR / "user_api_config.json"
 _VALID_EFFORTS = frozenset({"low", "medium", "high"})
+
+
+def _normalize_concurrency(val: Any) -> int:
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return LLM_MAX_CONCURRENCY
+    return max(1, min(16, n))
 
 
 def mask_api_key(key: str) -> str:
@@ -65,6 +79,7 @@ def get_llm_settings_public() -> dict[str, Any]:
         ),
         "model": model,
         "thinking_effort": effort,
+        "max_concurrency": _normalize_concurrency(saved.get("max_concurrency")),
         "available_models": models,
         "api_key_masked": mask_api_key(raw_key) if configured else "",
         "has_env_fallback": bool(LLM_API_KEY),
@@ -87,6 +102,7 @@ def save_user_llm_settings(
     model: str,
     thinking_effort: str = "medium",
     available_models: list[str] | None = None,
+    max_concurrency: int | None = None,
 ) -> dict[str, Any]:
     existing = load_raw_user_llm_settings()
     final_key = api_key.strip() or str(existing.get("api_key") or "").strip()
@@ -107,6 +123,11 @@ def save_user_llm_settings(
         if available_models
         else (existing_models if isinstance(existing_models, list) else [])
     )
+    resolved_concurrency = (
+        _normalize_concurrency(max_concurrency)
+        if max_concurrency is not None
+        else _normalize_concurrency(existing.get("max_concurrency"))
+    )
     payload = {
         "configured": True,
         "provider": provider.strip() or "custom",
@@ -114,6 +135,7 @@ def save_user_llm_settings(
         "base_url": cleaned_url,
         "model": cleaned_model,
         "thinking_effort": _normalize_effort(thinking_effort),
+        "max_concurrency": resolved_concurrency,
         "available_models": _normalize_models(source_models, cleaned_model),
     }
     _write_settings_file(payload)
@@ -123,6 +145,7 @@ def save_user_llm_settings(
 def update_user_llm_selection(
     model: str | None = None,
     thinking_effort: str | None = None,
+    max_concurrency: int | None = None,
 ) -> dict[str, Any]:
     existing = load_raw_user_llm_settings()
     raw_key = str(existing.get("api_key") or "").strip()
@@ -134,6 +157,11 @@ def update_user_llm_selection(
         if thinking_effort is not None
         else _normalize_effort(existing.get("thinking_effort"))
     )
+    next_concurrency = (
+        _normalize_concurrency(max_concurrency)
+        if max_concurrency is not None
+        else _normalize_concurrency(existing.get("max_concurrency"))
+    )
     existing_models = existing.get("available_models")
     payload = {
         "configured": configured,
@@ -144,6 +172,7 @@ def update_user_llm_selection(
         ).strip(),
         "model": next_model,
         "thinking_effort": next_effort,
+        "max_concurrency": next_concurrency,
         "available_models": _normalize_models(
             existing_models if isinstance(existing_models, list) else [],
             next_model,
@@ -168,3 +197,8 @@ def get_effective_llm_credentials() -> tuple[str, str, str, str]:
         return raw_key, base_url, model, effort
     saved_model = str(saved.get("model") or LLM_MODEL or "deepseek-chat").strip()
     return LLM_API_KEY, LLM_BASE_URL, saved_model, effort
+
+
+def get_effective_llm_concurrency() -> int:
+    saved = load_raw_user_llm_settings()
+    return _normalize_concurrency(saved.get("max_concurrency"))

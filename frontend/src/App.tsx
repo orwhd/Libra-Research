@@ -142,6 +142,7 @@ export const App: React.FC = () => {
             base_url: 'https://api.deepseek.com',
             model: 'deepseek-chat',
             thinking_effort: 'medium',
+            max_concurrency: 4,
             available_models: [],
             api_key_masked: '',
             has_env_fallback: false,
