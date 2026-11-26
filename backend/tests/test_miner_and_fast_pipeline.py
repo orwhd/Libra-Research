@@ -387,3 +387,67 @@ async def test_llm_api_max_concurrency_semaphore_throttles_inflight_requests(
     assert state["peak"] == 2
 
 
+def test_workspace_mode_separation_and_cross_workspace_recommended_papers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+    from app.db import init_db
+    from app.main import app
+    from app.services import recommended_papers
+
+    init_db()
+    client = TestClient(app)
+
+    ws_data = client.post(
+        "/api/workspaces",
+        json={"title": "帮我看看关于最新的HCI研究情况", "workspace_type": "data"},
+    ).json()
+    ws_repro = client.post(
+        "/api/workspaces",
+        json={"title": "Reproduce embodied robotics policy", "workspace_type": "reproduce"},
+    ).json()
+
+    assert ws_data["workspace_type"] == "data"
+    assert ws_repro["workspace_type"] == "reproduce"
+
+    only_data = client.get("/api/workspaces?workspace_type=data").json()
+    only_repro = client.get("/api/workspaces?workspace_type=reproduce").json()
+    assert any(w["workspace_id"] == ws_data["workspace_id"] for w in only_data)
+    assert all(w["workspace_type"] == "data" for w in only_data)
+    assert any(w["workspace_id"] == ws_repro["workspace_id"] for w in only_repro)
+    assert all(w["workspace_type"] == "reproduce" for w in only_repro)
+
+    # Verify recommendation engine reads BOTH data and reproduce workspaces
+    signals = recommended_papers.collect_all_workspace_signals()
+    assert "帮我看看关于最新的HCI研究情况" in signals["titles"]
+    assert "Reproduce embodied robotics policy" in signals["titles"]
+    extracted_tags = [tag for tag, _ in recommended_papers.extract_research_topics(signals)]
+    assert "HCI & Interactive Systems" in extracted_tags
+    assert "Embodied AI & Robotics" in extracted_tags
+
+    async def _fake_fetch_topic(
+        _client: Any, topic_tag: str, search_query: str, _cutoff: str
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "full_title": f"Benchmarking {topic_tag}: Reproducible System Study",
+                "year": 2025,
+                "venue": "CHI",
+                "citations": 88,
+                "topic_tag": topic_tag,
+                "source_url": f"https://example.org/{abs(hash(search_query)) % 10000}",
+            }
+        ]
+
+    monkeypatch.setattr(recommended_papers, "_fetch_openalex_papers_for_topic", _fake_fetch_topic)
+    rec_resp = client.get("/api/recommended-papers?force=true")
+    assert rec_resp.status_code == 200
+    payload = rec_resp.json()
+    assert len(payload["items"]) == 4
+    assert "HCI & Interactive Systems" in payload["topics"]
+    assert "Embodied AI & Robotics" in payload["topics"]
+    assert any("HCI & Interactive Systems" in it["full_title"] for it in payload["items"])
+    assert any("Embodied AI & Robotics" in it["full_title"] for it in payload["items"])
+
+
+

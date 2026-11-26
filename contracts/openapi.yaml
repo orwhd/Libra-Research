@@ -1,0 +1,676 @@
+openapi: 3.1.0
+info:
+  title: Libra Research Reproduce Harness API V2
+  version: 0.2.0
+  description: V1 paths preserved; Chat is the sole user operation path. V2 adds read-only activity navigation,
+    CanvasProjection, optional upload metadata.
+servers:
+- url: http://localhost:8000
+paths:
+  /api/runs:
+    post:
+      summary: Create a research run without starting paid work
+      operationId: createRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+  /api/runs/{run_id}:
+    get:
+      summary: Read run details
+      operationId: getRun
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+  /api/runs/{run_id}/chat:
+    post:
+      summary: Sole user-facing command path
+      operationId: submitChat
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCommand'
+      responses:
+        '202':
+          description: Accepted or queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '200':
+          description: Answered read-only inquiry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '400':
+          description: Invalid command
+        '409':
+          description: Conflict with current state
+  /api/runs/{run_id}/events:
+    get:
+      summary: Read-only SSE stream; resumable via Last-Event-ID
+      operationId: streamEvents
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+        description: Resume strictly after seq
+      - name: Last-Event-ID
+        in: header
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 'SSE events: each data payload conforms to event.schema.json'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /api/runs/{run_id}/snapshot:
+    get:
+      summary: Read-only current or historical projection
+      operationId: getSnapshot
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      - name: at_seq
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+        required: false
+      responses:
+        '200':
+          description: Event-sourced snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSnapshot'
+  /api/runs/{run_id}/artifacts:
+    get:
+      summary: List persisted artifacts
+      operationId: listArtifacts
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: Artifact list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Artifact'
+  /api/artifacts/{artifact_id}:
+    get:
+      summary: Read artifact metadata, not arbitrary filesystem paths
+      operationId: getArtifact
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Artifact metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+  /api/runs/{run_id}/report:
+    get:
+      summary: Read status and artifact refs for final report
+      operationId: getReport
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: Report status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportStatus'
+  /api/runs/{run_id}/messages:
+    get:
+      summary: Read existing Chat messages/activity cards for silent Canvas navigation; never execute research work
+      operationId: listRunMessages
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      - name: ref_kind
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - agent
+          - task
+          - pod
+          - debate
+          - collaboration
+          - artifact
+          - paper
+      - name: ref_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 30
+      responses:
+        '200':
+          description: Read-only existing messages, not generated answers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessagePage'
+  /api/runs/{run_id}/attachments:
+    post:
+      summary: Optional safe upload for paper/data attachments; upload alone must not start agent work
+      operationId: uploadRunAttachment
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Validated/uploaded attachment metadata, does not imply scientific validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadReceipt'
+        '413':
+          description: File too large
+        '415':
+          description: Unsupported type
+components:
+  parameters:
+    runId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateRunRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        paper_id:
+          type: string
+          default: paper_A
+    Run:
+      type: object
+      additionalProperties: false
+      required:
+      - run_id
+      - status
+      - created_at
+      - mode
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - created
+          - running
+          - paused
+          - completed
+          - failed
+        created_at:
+          type: string
+          format: date-time
+        mode:
+          type: string
+          enum:
+          - live
+          - simulation
+        title:
+          type: string
+    SelectedContext:
+      type: object
+      additionalProperties: false
+      required:
+      - kind
+      - id
+      properties:
+        kind:
+          type: string
+          enum:
+          - agent
+          - task
+          - pod
+          - debate
+          - artifact
+          - paper
+          - collaboration
+        id:
+          type: string
+    ChatCommand:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - text
+      properties:
+        request_id:
+          type: string
+          minLength: 1
+        text:
+          type: string
+          minLength: 1
+        selected_context:
+          oneOf:
+          - $ref: '#/components/schemas/SelectedContext'
+          - type: 'null'
+        attachment_ids:
+          type: array
+          items:
+            type: string
+          uniqueItems: true
+          default: []
+    ChatResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - command_id
+      - status
+      - message
+      properties:
+        command_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - answered
+          - accepted
+          - queued
+          - requires_approval
+          - rejected
+        message:
+          type: string
+        reason_code:
+          type:
+          - string
+          - 'null'
+        last_seq:
+          type:
+          - integer
+          - 'null'
+    RunSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+      - run_id
+      - at_seq
+      - agents
+      - tasks
+      - debates
+      - pods
+      - evidence
+      - resources
+      properties:
+        run_id:
+          type: string
+        at_seq:
+          type: integer
+          minimum: 0
+        agents:
+          type: array
+          items:
+            type: object
+        tasks:
+          type: array
+          items:
+            type: object
+        debates:
+          type: array
+          items:
+            type: object
+        pods:
+          type: array
+          items:
+            type: object
+        evidence:
+          type: array
+          items:
+            type: object
+        resources:
+          type: object
+        canvas:
+          oneOf:
+          - $ref: '#/components/schemas/CanvasProjection'
+          - type: 'null'
+          description: Optional V2 read-only active collaboration/persona projection; old RunSnapshot required fields
+            preserved.
+    Artifact:
+      type: object
+      additionalProperties: false
+      required:
+      - artifact_id
+      - run_id
+      - kind
+      - sha256
+      - validation_status
+      properties:
+        artifact_id:
+          type: string
+        run_id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - dataset
+          - script
+          - figure
+          - report
+          - log
+          - other
+        sha256:
+          type: string
+        mime_type:
+          type:
+          - string
+          - 'null'
+        validation_status:
+          type: string
+          enum:
+          - pending
+          - passed
+          - failed
+          - inconclusive
+        download_url:
+          type:
+          - string
+          - 'null'
+          description: Backend-generated scoped download URL; never return raw host paths
+    ReportStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - artifact_ids
+      - missing_requirements
+      properties:
+        status:
+          type: string
+          enum:
+          - not_started
+          - generating
+          - ready
+          - failed
+        artifact_ids:
+          type: array
+          items:
+            type: string
+        missing_requirements:
+          type: array
+          items:
+            type: string
+    Persona:
+      type: object
+      additionalProperties: false
+      required:
+      - persona_id
+      - role
+      - label
+      - runtime_agent_id
+      - state
+      - is_main
+      - task_ids
+      properties:
+        persona_id:
+          type: string
+          minLength: 1
+        role:
+          type: string
+          minLength: 1
+        label:
+          type: string
+          minLength: 1
+        runtime_agent_id:
+          type:
+          - string
+          - 'null'
+        state:
+          type: string
+          enum:
+          - idle
+          - assigned
+          - working
+          - waiting
+          - debating
+          - reporting
+          - handoff
+          - paused
+          - failed
+          - completed
+        is_main:
+          type: boolean
+        task_ids:
+          type: array
+          items:
+            type: string
+          uniqueItems: true
+    Collaboration:
+      type: object
+      additionalProperties: false
+      required:
+      - collaboration_id
+      - kind
+      - status
+      - topic
+      - participant_persona_ids
+      - ref
+      - last_event_seq
+      properties:
+        collaboration_id:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum:
+          - debate
+          - pod
+          - collaboration
+        status:
+          type: string
+          enum:
+          - active
+          - ending
+          - ended
+        topic:
+          type: string
+        participant_persona_ids:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+          uniqueItems: true
+        ref:
+          $ref: '#/components/schemas/SourceRef'
+        last_event_seq:
+          type: integer
+          minimum: 0
+    SourceRef:
+      type: object
+      additionalProperties: false
+      required:
+      - kind
+      - id
+      properties:
+        kind:
+          type: string
+          enum:
+          - debate
+          - pod
+          - task
+          - collaboration
+        id:
+          type: string
+          minLength: 1
+    CanvasProjection:
+      description: Read-only projection of persona identities and actual collaboration states; layout coordinates
+        and visual tween progress are not backend task truth.
+      type: object
+      additionalProperties: false
+      required:
+      - run_id
+      - at_seq
+      - mode
+      - personas
+      - collaborations
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        at_seq:
+          type: integer
+          minimum: 0
+        mode:
+          type: string
+          enum:
+          - live
+          - simulation
+        personas:
+          type: array
+          items:
+            $ref: '#/components/schemas/Persona'
+        collaborations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Collaboration'
+    ChatActivityMessage:
+      type: object
+      additionalProperties: false
+      required:
+      - message_id
+      - run_id
+      - kind
+      - role
+      - created_at
+      - text
+      - related_refs
+      - artifact_ids
+      properties:
+        message_id:
+          type: string
+        run_id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - message
+          - activity
+          - file
+          - system
+        role:
+          type: string
+          enum:
+          - user
+          - main
+          - activity
+          - system
+        created_at:
+          type: string
+          format: date-time
+        text:
+          type: string
+        related_refs:
+          type: array
+          items:
+            $ref: '#/components/schemas/SelectedContext'
+        artifact_ids:
+          type: array
+          items:
+            type: string
+          uniqueItems: true
+        seq:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+    ChatMessagePage:
+      type: object
+      additionalProperties: false
+      required:
+      - messages
+      - next_cursor
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatActivityMessage'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+    UploadReceipt:
+      type: object
+      additionalProperties: false
+      required:
+      - artifact_id
+      - sha256
+      - mime_type
+      - size_bytes
+      properties:
+        artifact_id:
+          type: string
+        sha256:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        filename:
+          type: string

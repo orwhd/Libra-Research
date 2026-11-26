@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/libra-research/contracts/canvas-projection.v2.schema.json",
+  "title": "Libra Research Reproduce CanvasProjection V2",
+  "description": "Read-only projection of persona identities and actual collaboration states; layout coordinates and visual tween progress are not backend task truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "at_seq", "mode", "personas", "collaborations"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "at_seq": {"type": "integer", "minimum": 0},
+    "mode": {"type": "string", "enum": ["live", "simulation"]},
+    "personas": {"type": "array", "items": {"$ref": "#/$defs/Persona"}},
+    "collaborations": {"type": "array", "items": {"$ref": "#/$defs/Collaboration"}}
+  },
+  "$defs": {
+    "Persona": {
+      "type": "object", "additionalProperties": false,
+      "required": ["persona_id", "role", "label", "runtime_agent_id", "state", "is_main", "task_ids"],
+      "properties": {
+        "persona_id": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "runtime_agent_id": {"type": ["string", "null"]},
+        "state": {"type": "string", "enum": ["idle", "assigned", "working", "waiting", "debating", "reporting", "handoff", "paused", "failed", "completed"]},
+        "is_main": {"type": "boolean"},
+        "task_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "Collaboration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["collaboration_id", "kind", "status", "topic", "participant_persona_ids", "ref", "last_event_seq"],
+      "properties": {
+        "collaboration_id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["debate", "pod", "collaboration"]},
+        "status": {"type": "string", "enum": ["active", "ending", "ended"]},
+        "topic": {"type": "string"},
+        "participant_persona_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "ref": {"$ref": "#/$defs/SourceRef"},
+        "last_event_seq": {"type": "integer", "minimum": 0}
+      }
+    },
+    "SourceRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["debate", "pod", "task", "collaboration"]},
+        "id": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

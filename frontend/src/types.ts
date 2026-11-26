@@ -298,9 +298,12 @@ export interface ChatMessage {
   created_at: string;
 }
 
+export type WorkspaceMode = 'data' | 'reproduce';
+
 export interface Workspace {
   workspace_id: string;
   title: string;
+  workspace_type?: WorkspaceMode;
   created_at: string;
   updated_at: string;
 }
@@ -369,4 +372,30 @@ export interface WeeklyTrendingChartsResponse {
   cached: boolean;
   sources: string[];
   items: TrendingChartItem[];
+}
+
+export type RecommendedPaperIconKind = 'paper' | 'code' | 'experiment' | 'model';
+
+export interface RecommendedPaperItem {
+  id: string;
+  title: string;
+  full_title: string;
+  icon_kind: RecommendedPaperIconKind;
+  year: number | null;
+  venue: string;
+  citations: number;
+  topic_tag: string;
+  prompt: string;
+  source_url: string;
+}
+
+export interface RecommendedPapersResponse {
+  fingerprint: string;
+  fetched_at: string;
+  expires_at: string;
+  cached: boolean;
+  workspace_count: number;
+  topics: string[];
+  sources: string[];
+  items: RecommendedPaperItem[];
 }

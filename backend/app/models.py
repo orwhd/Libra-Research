@@ -316,15 +316,20 @@ class ChatMessage(BaseModel):
     created_at: str
 
 
+WorkspaceMode = Literal["data", "reproduce"]
+
+
 class Workspace(BaseModel):
     workspace_id: str
     title: str
+    workspace_type: WorkspaceMode = "data"
     created_at: str
     updated_at: str
 
 
 class CreateWorkspaceRequest(BaseModel):
     title: str = "New Research Workspace"
+    workspace_type: WorkspaceMode = "data"
 
 
 class UploadedFileItem(BaseModel):
@@ -444,3 +449,30 @@ class WeeklyTrendingChartsResponse(BaseModel):
     cached: bool
     sources: list[str] = Field(default_factory=list)
     items: list[TrendingChartItem] = Field(default_factory=list)
+
+
+RecommendedPaperIconKind = Literal["paper", "code", "experiment", "model"]
+
+
+class RecommendedPaperItem(BaseModel):
+    id: str
+    title: str
+    full_title: str
+    icon_kind: RecommendedPaperIconKind = "paper"
+    year: int | None = None
+    venue: str = ""
+    citations: int = 0
+    topic_tag: str = ""
+    prompt: str
+    source_url: str = ""
+
+
+class RecommendedPapersResponse(BaseModel):
+    fingerprint: str
+    fetched_at: str
+    expires_at: str
+    cached: bool
+    workspace_count: int = 0
+    topics: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    items: list[RecommendedPaperItem] = Field(default_factory=list)

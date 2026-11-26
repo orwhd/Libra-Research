@@ -1,0 +1,20 @@
+{
+  "run_id": "run-test",
+  "at_seq": 19,
+  "mode": "simulation",
+  "personas": [
+    {"persona_id":"persona_main","role":"main","label":"Main","runtime_agent_id":null,"state":"idle","is_main":true,"task_ids":[]},
+    {"persona_id":"persona_paper","role":"paper","label":"Paper","runtime_agent_id":null,"state":"idle","is_main":false,"task_ids":[]},
+    {"persona_id":"persona_data","role":"data","label":"Data","runtime_agent_id":null,"state":"idle","is_main":false,"task_ids":[]},
+    {"persona_id":"persona_analysis","role":"analysis","label":"Analysis","runtime_agent_id":"agent-analysis-1","state":"debating","is_main":false,"task_ids":["task-1"]},
+    {"persona_id":"persona_validation","role":"validation","label":"Validation","runtime_agent_id":"agent-validation-1","state":"debating","is_main":false,"task_ids":["task-2"]},
+    {"persona_id":"persona_support","role":"support","label":"Support","runtime_agent_id":null,"state":"idle","is_main":false,"task_ids":[]}
+  ],
+  "collaborations": [
+    {
+      "collaboration_id":"collab-17", "kind":"debate", "status":"active", "topic":"Citation window comparability",
+      "participant_persona_ids":["persona_analysis","persona_validation"],
+      "ref":{"kind":"debate","id":"debate-03"}, "last_event_seq":19
+    }
+  ]
+}

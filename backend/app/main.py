@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from .api.routes import router as api_router
 from .config import VENDOR_DIR
 from .db import init_db
+from libra_reproduce.api import RUNTIME as REPRODUCE_RUNTIME, router as reproduce_router
+from libra_reproduce.storage.db import init_reproduce_db
 from .services.weekly_trending_charts import (
     get_weekly_trending_charts,
     has_fresh_weekly_cache,
@@ -26,6 +28,8 @@ async def _warm_weekly_trending() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    init_reproduce_db()
+    REPRODUCE_RUNTIME.event_store.recover_orphaned_running_runs()
     VENDOR_DIR.mkdir(parents=True, exist_ok=True)
     warm_task: asyncio.Task[None] | None = None
     if not os.getenv("PYTEST_CURRENT_TEST") and not has_fresh_weekly_cache():
@@ -38,8 +42,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="WHALES Lab Project 1 — Research Canvas API",
-    version="1.0.0",
+    title="Libra Research — Data Canvas & Paper Reproduction API",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -53,3 +57,4 @@ app.add_middleware(
 
 app.mount("/vendor", StaticFiles(directory=str(VENDOR_DIR)), name="vendor")
 app.include_router(api_router)
+app.include_router(reproduce_router)

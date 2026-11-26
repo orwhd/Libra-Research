@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from openai import AsyncOpenAI
 from sse_starlette.sse import EventSourceResponse
+
+from libra_reproduce.api import build_reproduce_sse_response, get_reproduce_run_or_none
+from libra_reproduce.schemas import Run as ReproduceRun
 
 from ..agents.capability_catalog import IFRAME_VIEW_STATE_BRIDGE
 from ..agents.orchestrator import (
@@ -46,6 +49,7 @@ from ..models import (
     FollowUpSuggestion,
     LLMSettingsResponse,
     PreviewViewState,
+    RecommendedPapersResponse,
     RunEvent,
     TaskRun,
     UpdateCanvasPositionRequest,
@@ -56,6 +60,7 @@ from ..models import (
     WeeklyTrendingChartsResponse,
     Workspace,
     WorkspaceDetailResponse,
+    WorkspaceMode,
 )
 from ..services.api_settings import (
     clear_user_llm_settings,
@@ -78,6 +83,7 @@ from ..services.browser_validator import (
     schedule_comment_screenshot,
 )
 from ..services.lineage_manager import load_lineage
+from ..services.recommended_papers import get_recommended_papers
 from ..services.weekly_trending_charts import get_weekly_trending_charts
 
 router = APIRouter(prefix="/api")
@@ -93,9 +99,12 @@ def _track_task(coro: Any) -> asyncio.Task[Any]:
 
 
 def _row_to_workspace(r: Any) -> Workspace:
+    raw_type = r["workspace_type"] if "workspace_type" in r.keys() else "data"
+    ws_type: WorkspaceMode = "reproduce" if raw_type == "reproduce" else "data"
     return Workspace(
         workspace_id=r["workspace_id"],
         title=r["title"],
+        workspace_type=ws_type,
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
@@ -252,6 +261,14 @@ async def get_trending_charts(
     return WeeklyTrendingChartsResponse.model_validate(data)
 
 
+@router.get("/recommended-papers", response_model=RecommendedPapersResponse)
+async def get_recommended_papers_endpoint(
+    force: bool = Query(default=False),
+) -> RecommendedPapersResponse:
+    data = await get_recommended_papers(force_refresh=force)
+    return RecommendedPapersResponse.model_validate(data)
+
+
 @router.post("/uploads", response_model=UploadSummaryResponse)
 async def upload_dataset_files(req: CreateUploadRequest) -> UploadSummaryResponse:
     upload_id = f"up_{uuid.uuid4().hex[:10]}"
@@ -275,8 +292,8 @@ async def upload_dataset_files(req: CreateUploadRequest) -> UploadSummaryRespons
             raise HTTPException(status_code=400, detail=f"Invalid base64 payload for {norm}: {exc}") from exc
 
         total_bytes += len(raw_bytes)
-        if total_bytes > 25 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Total upload size exceeds 25 MB limit")
+        if total_bytes > 64 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Total upload size exceeds 64 MB limit")
 
         dest = (base_dir / norm).resolve()
         if not str(dest).startswith(str(base_dir.resolve())):
@@ -305,11 +322,94 @@ async def upload_dataset_files(req: CreateUploadRequest) -> UploadSummaryRespons
     )
 
 
+_MAX_MULTIPART_FILE_BYTES = 64 * 1024 * 1024
+_MAX_MULTIPART_TOTAL_BYTES = 100 * 1024 * 1024
+
+
+@router.post("/uploads/multipart", response_model=UploadSummaryResponse)
+async def upload_dataset_files_multipart(
+    label: str = Form(default="Uploaded Files"),
+    files: list[UploadFile] = File(...),
+    relative_paths: list[str] = Form(default=[]),
+) -> UploadSummaryResponse:
+    upload_id = f"up_{uuid.uuid4().hex[:10]}"
+    base_dir = RUNTIME_DIR / "uploads" / upload_id / "files"
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_paths: list[str] = []
+    skipped_hidden: list[str] = []
+    total_bytes = 0
+    is_single = len(files) == 1
+
+    for idx, up in enumerate(files[:150]):
+        raw_rel = (
+            relative_paths[idx]
+            if idx < len(relative_paths) and relative_paths[idx].strip()
+            else (up.filename or f"file_{idx + 1}")
+        )
+        norm = raw_rel.replace("\\", "/").lstrip("/")
+        if not norm or ".." in Path(norm).parts:
+            continue
+        parts = Path(norm).parts
+        if any(part in ("node_modules", "__pycache__", ".git", "dist") for part in parts):
+            skipped_hidden.append(norm)
+            continue
+        if any(part.startswith(".") for part in parts):
+            if is_single:
+                cleaned_parts = [p.lstrip(".") or f"file_{idx + 1}" for p in parts]
+                norm = "/".join(cleaned_parts)
+            else:
+                skipped_hidden.append(norm)
+                continue
+
+        raw_bytes = await up.read()
+        if len(raw_bytes) > _MAX_MULTIPART_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File '{norm}' ({len(raw_bytes) / (1024 * 1024):.1f} MB) exceeds the 64 MB per-file limit.",
+            )
+        total_bytes += len(raw_bytes)
+        if total_bytes > _MAX_MULTIPART_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Total upload size exceeds the 100 MB batch limit.",
+            )
+
+        dest = (base_dir / norm).resolve()
+        try:
+            dest.relative_to(base_dir.resolve())
+        except ValueError:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw_bytes)
+        saved_paths.append(norm)
+
+    if not saved_paths:
+        hint = f" (skipped hidden files: {', '.join(skipped_hidden[:3])})" if skipped_hidden else ""
+        raise HTTPException(status_code=400, detail=f"No valid readable files were included in upload{hint}.")
+
+    manifest = {
+        "upload_id": upload_id,
+        "label": label.strip() or (saved_paths[0] if len(saved_paths) == 1 else "Uploaded Files"),
+        "created_at": utc_now_iso(),
+        "files": saved_paths,
+    }
+    (RUNTIME_DIR / "uploads" / upload_id / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return UploadSummaryResponse(
+        upload_id=upload_id,
+        label=manifest["label"],
+        file_count=len(saved_paths),
+        files=saved_paths,
+    )
+
+
 _HTML_SKIP_TAGS = frozenset({"script", "style", "noscript", "svg"})
 _HTML_BLOCK_TAGS = frozenset(
     {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "br", "section", "article", "header", "footer", "blockquote"}
 )
-_MAX_URL_BYTES = 15 * 1024 * 1024
+_MAX_URL_BYTES = 50 * 1024 * 1024
 
 
 class _HTMLTableAndTextExtractor(HTMLParser):
@@ -468,10 +568,10 @@ async def _validate_public_http_url(raw_url: str) -> str:
     return parsed.geturl()
 
 
-async def _fetch_public_url(initial_url: str) -> tuple[str, dict[str, str], str]:
+async def _fetch_public_url(initial_url: str) -> tuple[str, dict[str, str], bytes]:
     current_url = await _validate_public_http_url(initial_url)
     async with httpx.AsyncClient(
-        timeout=15.0,
+        timeout=20.0,
         follow_redirects=False,
         headers={"User-Agent": "LibraResearch/1.0"},
     ) as client:
@@ -497,14 +597,12 @@ async def _fetch_public_url(initial_url: str) -> tuple[str, dict[str, str], str]
                         if total > _MAX_URL_BYTES:
                             raise HTTPException(
                                 status_code=413,
-                                detail="Remote URL response exceeds 15 MB limit.",
+                                detail="Remote URL response exceeds 50 MB limit.",
                             )
                         chunks.append(chunk)
                     raw_bytes = b"".join(chunks)
-                    encoding = resp.encoding or "utf-8"
-                    raw_text = raw_bytes.decode(encoding, errors="replace")
                     headers = {k.lower(): v for k, v in resp.headers.items()}
-                    return str(resp.url), headers, raw_text
+                    return str(resp.url), headers, raw_bytes
             except HTTPException:
                 raise
             except httpx.HTTPError as exc:
@@ -514,12 +612,22 @@ async def _fetch_public_url(initial_url: str) -> tuple[str, dict[str, str], str]
 
 
 def _persist_url_upload_files(
-    base_dir: Path, final_url: str, headers: dict[str, str], raw_text: str
+    base_dir: Path, final_url: str, headers: dict[str, str], raw_bytes: bytes
 ) -> list[str]:
     base_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(urllib.parse.urlsplit(final_url).path).suffix.lower()
+    url_path = urllib.parse.urlsplit(final_url).path
+    suffix = Path(url_path).suffix.lower()
     content_type = headers.get("content-type", "").split(";")[0].strip().lower()
     saved_paths: list[str] = []
+
+    if suffix == ".pdf" or "application/pdf" in content_type or b"%PDF-" in raw_bytes[:1024]:
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(url_path).stem or "remote_paper").strip("._") or "remote_paper"
+        fname = f"{stem[:80]}.pdf"
+        (base_dir / fname).write_bytes(raw_bytes)
+        saved_paths.append(fname)
+        return saved_paths
+
+    raw_text = raw_bytes.decode("utf-8", errors="replace")
 
     if suffix == ".csv" or content_type in ("text/csv", "application/csv"):
         (base_dir / "remote_data.csv").write_text(raw_text, encoding="utf-8")
@@ -572,10 +680,10 @@ def _persist_url_upload_files(
 
 @router.post("/uploads/url", response_model=UploadSummaryResponse)
 async def upload_dataset_url(req: CreateUrlUploadRequest) -> UploadSummaryResponse:
-    final_url, headers, raw_text = await _fetch_public_url(req.url)
+    final_url, headers, raw_bytes = await _fetch_public_url(req.url)
     upload_id = f"up_{uuid.uuid4().hex[:10]}"
     base_dir = RUNTIME_DIR / "uploads" / upload_id / "files"
-    saved_paths = _persist_url_upload_files(base_dir, final_url, headers, raw_text)
+    saved_paths = _persist_url_upload_files(base_dir, final_url, headers, raw_bytes)
 
     parsed_final = urllib.parse.urlsplit(final_url)
     host = parsed_final.hostname or "url"
@@ -604,27 +712,38 @@ async def upload_dataset_url(req: CreateUrlUploadRequest) -> UploadSummaryRespon
 
 
 @router.get("/workspaces", response_model=list[Workspace])
-async def list_workspaces() -> list[Workspace]:
+async def list_workspaces(
+    workspace_type: WorkspaceMode | None = Query(default=None),
+) -> list[Workspace]:
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM workspaces ORDER BY updated_at DESC"
-        ).fetchall()
+        if workspace_type in ("data", "reproduce"):
+            rows = conn.execute(
+                "SELECT * FROM workspaces WHERE workspace_type = ? ORDER BY updated_at DESC",
+                (workspace_type,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM workspaces ORDER BY updated_at DESC"
+            ).fetchall()
     return [_row_to_workspace(r) for r in rows]
 
 
 @router.post("/workspaces", response_model=Workspace)
 async def create_workspace(req: CreateWorkspaceRequest) -> Workspace:
     now = utc_now_iso()
+    ws_type: WorkspaceMode = "reproduce" if req.workspace_type == "reproduce" else "data"
     ws = Workspace(
         workspace_id=f"ws_{uuid.uuid4().hex[:10]}",
         title=req.title.strip() or "New Research Workspace",
+        workspace_type=ws_type,
         created_at=now,
         updated_at=now,
     )
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO workspaces (workspace_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (ws.workspace_id, ws.title, ws.created_at, ws.updated_at),
+            "INSERT INTO workspaces (workspace_id, title, workspace_type, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (ws.workspace_id, ws.title, ws.workspace_type, ws.created_at, ws.updated_at),
         )
     return ws
 
@@ -819,8 +938,11 @@ async def submit_task(workspace_id: str, req: CreateTaskRequest) -> TaskRun:
     return _row_to_run(row)
 
 
-@router.get("/runs/{run_id}", response_model=TaskRun)
-async def get_run(run_id: str) -> TaskRun:
+@router.get("/runs/{run_id}", response_model=TaskRun | ReproduceRun)
+async def get_run(run_id: str) -> TaskRun | ReproduceRun:
+    rep_run = get_reproduce_run_or_none(run_id)
+    if rep_run is not None:
+        return rep_run
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM task_runs WHERE run_id = ?", (run_id,)).fetchone()
         if not row:
@@ -829,7 +951,13 @@ async def get_run(run_id: str) -> TaskRun:
 
 
 @router.get("/runs/{run_id}/events")
-async def stream_run_events(run_id: str) -> EventSourceResponse:
+async def stream_run_events(
+    run_id: str,
+    after: int | None = Query(default=None, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> EventSourceResponse:
+    if get_reproduce_run_or_none(run_id) is not None:
+        return await build_reproduce_sse_response(run_id, after=after, last_event_id=last_event_id)
     with get_conn() as conn:
         run_row = conn.execute("SELECT * FROM task_runs WHERE run_id = ?", (run_id,)).fetchone()
         if not run_row:

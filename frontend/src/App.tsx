@@ -3,6 +3,7 @@ import {
   createWorkspace,
   deleteArtifactVersion,
   getLLMSettings,
+  getRecommendedPapers,
   getWeeklyTrendingCharts,
   getWorkspaceDetail,
   listWorkspaces,
@@ -12,19 +13,23 @@ import {
 } from './api';
 import type {
   LLMSettings,
+  RecommendedPapersResponse,
   WeeklyTrendingChartsResponse,
   Workspace,
   WorkspaceDetailResponse,
+  WorkspaceMode,
 } from './types';
 import { LandingHero } from './components/LandingHero';
 import { ChatSidebar } from './components/ChatSidebar';
 import { InfiniteCanvas } from './components/InfiniteCanvas';
 import { ArtifactModal, type ModalState } from './components/ArtifactModal';
 import { DebugInspectorPage } from './components/DebugInspectorPage';
+import { ReproduceWorkspace } from './reproduce/workspace/ReproduceWorkspace';
 
 const STORAGE_WS_KEY = 'whales_research_canvas_workspace_id';
 const STORAGE_WS_LIST_KEY = 'whales_research_canvas_workspaces_cache';
 const STORAGE_SIDEBAR_W_KEY = 'whales_research_canvas_sidebar_width';
+const STORAGE_HOME_MODE_KEY = 'whales_research_canvas_home_mode';
 const MIN_SIDEBAR_WIDTH = 320;
 const DEFAULT_SIDEBAR_WIDTH = 390;
 const MIN_CANVAS_WIDTH = 360;
@@ -79,6 +84,19 @@ export const App: React.FC = () => {
   const [llmSettings, setLlmSettings] = useState<LLMSettings | null>(null);
   const [weeklyTrending, setWeeklyTrending] = useState<WeeklyTrendingChartsResponse | null>(null);
   const [trendingLoading, setTrendingLoading] = useState(true);
+  const [recommendedPapers, setRecommendedPapers] = useState<RecommendedPapersResponse | null>(
+    null
+  );
+  const [papersLoading, setPapersLoading] = useState(true);
+  const [homeMode, setHomeMode] = useState<WorkspaceMode>(() =>
+    localStorage.getItem(STORAGE_HOME_MODE_KEY) === 'reproduce' ? 'reproduce' : 'data'
+  );
+  const [pendingReproduceLaunch, setPendingReproduceLaunch] = useState<{
+    wsId: string;
+    prompt: string;
+    uploadId?: string | null;
+    requestId: string;
+  } | null>(null);
 
   const subscriptionsRef = useRef<Map<string, () => void>>(new Map());
   const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -100,6 +118,26 @@ export const App: React.FC = () => {
       /* ignore storage quota errors */
     }
     return list;
+  }, []);
+
+  const refreshRecommendedPapers = useCallback(async () => {
+    try {
+      const papers = await getRecommendedPapers();
+      setRecommendedPapers(papers);
+    } catch {
+      /* fallback handled gracefully when recommendedPapers is null */
+    } finally {
+      setPapersLoading(false);
+    }
+  }, []);
+
+  const handleChangeHomeMode = useCallback((nextMode: WorkspaceMode) => {
+    setHomeMode(nextMode);
+    try {
+      localStorage.setItem(STORAGE_HOME_MODE_KEY, nextMode);
+    } catch {
+      /* ignore storage errors */
+    }
   }, []);
 
   const refreshDetail = useCallback(async (wsId: string) => {
@@ -160,6 +198,7 @@ export const App: React.FC = () => {
         if (active) setTrendingLoading(false);
       }
     })();
+    void refreshRecommendedPapers();
     (async () => {
       const list = await refreshWorkspaces();
       if (!active) return;
@@ -194,7 +233,7 @@ export const App: React.FC = () => {
       subscriptionsRef.current.forEach((unsub) => unsub());
       subscriptionsRef.current.clear();
     };
-  }, [refreshWorkspaces, refreshDetail, findWorkspaceWithArtifacts]);
+  }, [refreshWorkspaces, refreshDetail, findWorkspaceWithArtifacts, refreshRecommendedPapers]);
 
   const attachRunSubscription = useCallback(
     (runId: string, wsId: string) => {
@@ -259,7 +298,10 @@ export const App: React.FC = () => {
     setSelectedIds([]);
     setAttachedCardIds([]);
     setModalState({ mode: 'closed' });
-    await refreshDetail(wsId);
+    const loaded = await refreshDetail(wsId);
+    if (loaded.workspace.workspace_type) {
+      handleChangeHomeMode(loaded.workspace.workspace_type);
+    }
   };
 
   const handleNewWorkspace = () => {
@@ -269,15 +311,56 @@ export const App: React.FC = () => {
     setSelectedIds([]);
     setAttachedCardIds([]);
     setModalState({ mode: 'closed' });
-    void refreshWorkspaces();
+    void refreshWorkspaces().then(() => refreshRecommendedPapers());
   };
 
-  const handleSubmitPrompt = async (prompt: string, uploadId?: string | null) => {
+  const handleSubmitPrompt = async (
+    prompt: string,
+    uploadId?: string | null,
+    modeOverride?: WorkspaceMode
+  ) => {
+    const targetMode: WorkspaceMode =
+      modeOverride ?? (detail?.workspace.workspace_type ?? homeMode);
+    if (targetMode === 'reproduce') {
+      setSubmitting(true);
+      try {
+        let wsId = activeWorkspaceId;
+        let createdWs: Workspace | null = null;
+        if (!wsId) {
+          createdWs = await createWorkspace(prompt.slice(0, 64), 'reproduce');
+          wsId = createdWs.workspace_id;
+          localStorage.setItem(STORAGE_WS_KEY, wsId);
+          setActiveWorkspaceId(wsId);
+        }
+        setPendingReproduceLaunch({
+          wsId,
+          prompt,
+          uploadId: uploadId ?? null,
+          requestId: `launch_${crypto.randomUUID().slice(0, 12)}`,
+        });
+        if (createdWs) {
+          setDetail({
+            workspace: createdWs,
+            messages: [],
+            runs: [],
+            events_by_run: {},
+            artifact_versions: [],
+            comments_by_version: {},
+          });
+        }
+        await refreshDetail(wsId);
+        void refreshWorkspaces().then(() => refreshRecommendedPapers());
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     setSubmitting(true);
     try {
       let wsId = activeWorkspaceId;
       if (!wsId) {
-        const created = await createWorkspace(prompt.slice(0, 64));
+        const created = await createWorkspace(prompt.slice(0, 64), targetMode);
         wsId = created.workspace_id;
         localStorage.setItem(STORAGE_WS_KEY, wsId);
         setActiveWorkspaceId(wsId);
@@ -293,7 +376,7 @@ export const App: React.FC = () => {
       });
       setAttachedCardIds([]);
       await refreshDetail(wsId);
-      void refreshWorkspaces();
+      void refreshWorkspaces().then(() => refreshRecommendedPapers());
       attachRunSubscription(run.run_id, wsId);
     } finally {
       setSubmitting(false);
@@ -409,24 +492,30 @@ export const App: React.FC = () => {
     return (
       <>
         <LandingHero
+          mode={homeMode}
+          onModeChange={handleChangeHomeMode}
           workspaces={workspaces}
           submitting={submitting}
           llmSettings={llmSettings}
           trendingCharts={weeklyTrending}
           trendingLoading={trendingLoading}
+          recommendedPapers={recommendedPapers}
+          papersLoading={papersLoading}
           onLLMSettingsChange={setLlmSettings}
           onSubmitPrompt={handleSubmitPrompt}
           onSelectWorkspace={(id) => void handleSelectWorkspace(id)}
         />
-        <button
-          type="button"
-          className="debug-corner-btn"
-          data-testid="debug-entry-btn"
-          title="Open direct overlay-free inspector page"
-          onClick={() => void handleEnterDebug()}
-        >
-          debug
-        </button>
+        {homeMode === 'data' && (
+          <button
+            type="button"
+            className="debug-corner-btn"
+            data-testid="debug-entry-btn"
+            title="Open direct overlay-free inspector page"
+            onClick={() => void handleEnterDebug()}
+          >
+            debug
+          </button>
+        )}
       </>
     );
   }
@@ -483,6 +572,36 @@ export const App: React.FC = () => {
       localStorage.setItem(STORAGE_SIDEBAR_W_KEY, String(next));
     }
   };
+
+  if ((detail.workspace.workspace_type ?? 'data') === 'reproduce') {
+    return (
+      <ReproduceWorkspace
+        workspaceId={detail.workspace.workspace_id}
+        workspaceTitle={detail.workspace.title}
+        sidebarWidth={sidebarWidth}
+        isResizing={isResizing}
+        llmSettings={llmSettings}
+        pendingLaunch={
+          pendingReproduceLaunch &&
+          pendingReproduceLaunch.wsId === detail.workspace.workspace_id
+            ? {
+                prompt: pendingReproduceLaunch.prompt,
+                uploadId: pendingReproduceLaunch.uploadId ?? null,
+                requestId: pendingReproduceLaunch.requestId,
+              }
+            : null
+        }
+        onConsumePendingLaunch={() => setPendingReproduceLaunch(null)}
+        onLLMSettingsChange={setLlmSettings}
+        onNewWorkspace={handleNewWorkspace}
+        onResizerPointerDown={handleResizerPointerDown}
+        onResizerPointerMove={handleResizerPointerMove}
+        onResizerPointerUp={finishResizing}
+        onResizerDoubleClick={handleResizerDoubleClick}
+        onResizerKeyDown={handleResizerKeyDown}
+      />
+    );
+  }
 
   return (
     <>
@@ -571,15 +690,17 @@ export const App: React.FC = () => {
         />
       </div>
 
-      <button
-        type="button"
-        className="debug-corner-btn"
-        data-testid="debug-entry-btn"
-        title="Open direct overlay-free inspector page"
-        onClick={() => void handleEnterDebug()}
-      >
-        debug
-      </button>
+      {(detail.workspace.workspace_type ?? 'data') === 'data' && (
+        <button
+          type="button"
+          className="debug-corner-btn"
+          data-testid="debug-entry-btn"
+          title="Open direct overlay-free inspector page"
+          onClick={() => void handleEnterDebug()}
+        >
+          debug
+        </button>
+      )}
     </>
   );
 };

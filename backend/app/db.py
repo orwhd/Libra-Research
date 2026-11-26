@@ -22,6 +22,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
+    workspace_type TEXT NOT NULL DEFAULT 'data',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -157,6 +158,14 @@ def init_db() -> None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
             conn.executescript(_SCHEMA_SQL)
+            ws_cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(workspaces)").fetchall()
+            }
+            if "workspace_type" not in ws_cols:
+                conn.execute(
+                    "ALTER TABLE workspaces ADD COLUMN workspace_type TEXT NOT NULL DEFAULT 'data'"
+                )
             msg_cols = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(messages)").fetchall()

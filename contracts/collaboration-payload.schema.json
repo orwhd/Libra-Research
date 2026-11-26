@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/libra-research/contracts/collaboration-payload.v2.schema.json",
+  "title": "V2 Collaboration Events Payload Contract",
+  "description": "Apply in addition to event.schema.json. Validates event.type-specific payload fields and monotonic revision; live/simulation separation is tested at transport/storage level.",
+  "oneOf": [
+    {"type":"object","required":["type","payload"],"properties":{"type":{"const":"collaboration.started"},"payload":{"$ref":"#/$defs/Started"}}},
+    {"type":"object","required":["type","payload"],"properties":{"type":{"const":"collaboration.members_changed"},"payload":{"$ref":"#/$defs/MembersChanged"}}},
+    {"type":"object","required":["type","payload"],"properties":{"type":{"const":"collaboration.ended"},"payload":{"$ref":"#/$defs/Ended"}}}
+  ],
+  "$defs": {
+    "Started": {"type":"object","required":["collaboration_id","kind","participant_persona_ids","topic","source_ref","revision"],"properties":{
+      "collaboration_id":{"type":"string","minLength":1},
+      "kind":{"type":"string","enum":["debate","pod","collaboration"]},
+      "participant_persona_ids":{"type":"array","minItems":2,"uniqueItems":true,"items":{"type":"string","minLength":1}},
+      "topic":{"type":"string"},
+      "source_ref":{"$ref":"#/$defs/SourceRef"},
+      "revision":{"type":"integer","minimum":1}
+    }},
+    "MembersChanged": {"type":"object","required":["collaboration_id","participant_persona_ids","revision","reason"],"properties":{
+      "collaboration_id":{"type":"string","minLength":1},
+      "participant_persona_ids":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},
+      "revision":{"type":"integer","minimum":2},
+      "reason":{"type":"string"}
+    }},
+    "Ended":{"type":"object","required":["collaboration_id","outcome","revision"],"properties":{
+      "collaboration_id":{"type":"string","minLength":1},
+      "outcome":{"type":"string","minLength":1},
+      "revision":{"type":"integer","minimum":2}
+    }},
+    "SourceRef":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{
+      "kind":{"type":"string","enum":["debate","pod","task","collaboration"]},
+      "id":{"type":"string","minLength":1}
+    }}
+  }
+}

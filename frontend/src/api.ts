@@ -4,6 +4,7 @@ import type {
   LineageGraph,
   LLMSettings,
   PreviewViewState,
+  RecommendedPapersResponse,
   RunEvent,
   TaskRun,
   ThinkingEffort,
@@ -12,6 +13,7 @@ import type {
   WeeklyTrendingChartsResponse,
   Workspace,
   WorkspaceDetailResponse,
+  WorkspaceMode,
 } from './types';
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -27,11 +29,14 @@ export function listWorkspaces(): Promise<Workspace[]> {
   return jsonFetch<Workspace[]>('/api/workspaces');
 }
 
-export function createWorkspace(title = 'New Research Workspace'): Promise<Workspace> {
+export function createWorkspace(
+  title = 'New Research Workspace',
+  workspaceType: WorkspaceMode = 'data'
+): Promise<Workspace> {
   return jsonFetch<Workspace>('/api/workspaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, workspace_type: workspaceType }),
   });
 }
 
@@ -56,41 +61,89 @@ export function submitTask(
   });
 }
 
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
+const MAX_UPLOAD_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
 
 export async function uploadDatasetFiles(
   label: string,
   fileList: FileList
 ): Promise<{ upload_id: string; label: string; file_count: number; files: string[] }> {
-  const items: { relative_path: string; content_base64: string }[] = [];
-  for (const file of Array.from(fileList)) {
-    const rel =
+  const rawFiles = Array.from(fileList);
+  const isSingle = rawFiles.length === 1;
+  const formData = new FormData();
+  formData.append('label', label);
+
+  const oversizedNames: string[] = [];
+  const hiddenNames: string[] = [];
+  let includedCount = 0;
+  let totalBytes = 0;
+
+  for (const file of rawFiles) {
+    let rel =
       (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-    if (!rel || rel.split('/').some((seg) => seg.startsWith('.'))) continue;
-    if (file.size > 15 * 1024 * 1024) continue;
-    const buf = await file.arrayBuffer();
-    items.push({
-      relative_path: rel,
-      content_base64: arrayBufferToBase64(buf),
-    });
-    if (items.length >= 150) break;
+    rel = rel.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!rel) continue;
+
+    const segments = rel.split('/');
+    if (segments.some((seg) => seg === '..')) continue;
+    if (segments.some((seg) => seg === 'node_modules' || seg === '__pycache__' || seg === '.git' || seg === 'dist')) {
+      hiddenNames.push(rel);
+      continue;
+    }
+    if (segments.some((seg) => seg.startsWith('.'))) {
+      if (isSingle) {
+        rel = segments.map((seg) => seg.replace(/^\.+/, '') || 'uploaded_file').join('/');
+      } else {
+        hiddenNames.push(rel);
+        continue;
+      }
+    }
+
+    if (file.size > MAX_UPLOAD_FILE_BYTES) {
+      oversizedNames.push(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`);
+      continue;
+    }
+    totalBytes += file.size;
+    if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
+      oversizedNames.push(`${file.name} (batch exceeds 100 MB total limit)`);
+      continue;
+    }
+
+    formData.append('files', file, file.name);
+    formData.append('relative_paths', rel);
+    includedCount += 1;
+    if (includedCount >= 150) break;
   }
-  if (items.length === 0) {
-    throw new Error('No readable files selected (hidden/oversized files skipped).');
+
+  if (includedCount === 0) {
+    if (oversizedNames.length > 0) {
+      throw new Error(
+        `Selected file exceeds the 64 MB limit: ${oversizedNames.slice(0, 3).join(', ')}.`
+      );
+    }
+    if (hiddenNames.length > 0) {
+      throw new Error(
+        `No readable non-hidden files found (skipped: ${hiddenNames.slice(0, 3).join(', ')}).`
+      );
+    }
+    throw new Error('No readable files selected.');
   }
-  return jsonFetch('/api/uploads', {
+
+  const res = await fetch('/api/uploads/multipart', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, files: items }),
+    body: formData,
   });
+  if (!res.ok) {
+    let detailMsg = '';
+    try {
+      const parsed = (await res.json()) as { detail?: string };
+      detailMsg = parsed.detail || '';
+    } catch {
+      detailMsg = await res.text();
+    }
+    throw new Error(detailMsg || `Upload failed (HTTP ${res.status}).`);
+  }
+  return res.json();
 }
 
 export function attachDatasetUrl(
@@ -248,4 +301,9 @@ export function updateLLMSelection(payload: {
 
 export function getWeeklyTrendingCharts(): Promise<WeeklyTrendingChartsResponse> {
   return jsonFetch<WeeklyTrendingChartsResponse>('/api/trending-charts');
+}
+
+export function getRecommendedPapers(force = false): Promise<RecommendedPapersResponse> {
+  const qs = force ? '?force=true' : '';
+  return jsonFetch<RecommendedPapersResponse>(`/api/recommended-papers${qs}`);
 }

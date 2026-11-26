@@ -13,15 +13,23 @@ import {
   CircleDot,
   Compass,
   Eye,
+  FileText,
+  Code2,
+  FlaskConical,
+  Cpu,
 } from 'lucide-react';
 import { listWorkspaces, updateLLMSelection } from '../api';
 import type {
   LLMSettings,
+  RecommendedPaperIconKind,
+  RecommendedPaperItem,
+  RecommendedPapersResponse,
   ThinkingEffort,
   TrendingChartIconKind,
   TrendingChartItem,
   WeeklyTrendingChartsResponse,
   Workspace,
+  WorkspaceMode,
 } from '../types';
 import { ChartViewPreviewCard } from './ChartViewPreviewCard';
 import {
@@ -34,13 +42,21 @@ import { ApiConfigModal } from './ApiConfigModal';
 import { ModelThinkingSelector } from './ModelThinkingSelector';
 
 interface LandingHeroProps {
+  mode: WorkspaceMode;
+  onModeChange: (next: WorkspaceMode) => void;
   workspaces: Workspace[];
   submitting: boolean;
   llmSettings: LLMSettings | null;
   trendingCharts: WeeklyTrendingChartsResponse | null;
   trendingLoading: boolean;
+  recommendedPapers: RecommendedPapersResponse | null;
+  papersLoading: boolean;
   onLLMSettingsChange: (next: LLMSettings) => void;
-  onSubmitPrompt: (prompt: string, uploadId?: string | null) => Promise<void>;
+  onSubmitPrompt: (
+    prompt: string,
+    uploadId?: string | null,
+    modeOverride?: WorkspaceMode
+  ) => Promise<void>;
   onSelectWorkspace: (workspaceId: string) => void;
 }
 
@@ -53,6 +69,13 @@ const CHART_VIEW_ICONS: Record<TrendingChartIconKind, React.ReactNode> = {
   hierarchy: <Layers size={15} className="example-chip-icon" aria-hidden="true" />,
   scatter: <CircleDot size={15} className="example-chip-icon" aria-hidden="true" />,
   radial: <Compass size={15} className="example-chip-icon" aria-hidden="true" />,
+};
+
+const PAPER_VIEW_ICONS: Record<RecommendedPaperIconKind, React.ReactNode> = {
+  paper: <FileText size={15} className="example-chip-icon" aria-hidden="true" />,
+  code: <Code2 size={15} className="example-chip-icon" aria-hidden="true" />,
+  experiment: <FlaskConical size={15} className="example-chip-icon" aria-hidden="true" />,
+  model: <Cpu size={15} className="example-chip-icon" aria-hidden="true" />,
 };
 
 const EMERGENCY_CHART_ITEMS: TrendingChartItem[] = [
@@ -106,27 +129,96 @@ const EMERGENCY_CHART_ITEMS: TrendingChartItem[] = [
   },
 ];
 
-const PLACEHOLDER_TEXT = 'Describe your question, or pick a chart view below...';
+const EMERGENCY_PAPER_ITEMS: RecommendedPaperItem[] = [
+  {
+    id: 'rec-paper-1',
+    title: 'Generative Agents: Interactive Simulacra',
+    full_title: 'Generative Agents: Interactive Simulacra of Human Behavior',
+    icon_kind: 'paper',
+    year: 2023,
+    venue: 'UIST',
+    citations: 2400,
+    topic_tag: 'HCI & Agents',
+    prompt:
+      'Reproduce the core method, experiments, and key evaluation results of "Generative Agents: Interactive Simulacra of Human Behavior" (2023) [https://arxiv.org/abs/2304.03442].',
+    source_url: 'https://arxiv.org/abs/2304.03442',
+  },
+  {
+    id: 'rec-paper-2',
+    title: 'Direct Preference Optimization (DPO)',
+    full_title: 'Direct Preference Optimization: Your Language Model is Secretly a Reward Model',
+    icon_kind: 'model',
+    year: 2023,
+    venue: 'NeurIPS',
+    citations: 3800,
+    topic_tag: 'Foundation Models',
+    prompt:
+      'Reproduce the core method, experiments, and key evaluation results of "Direct Preference Optimization: Your Language Model is Secretly a Reward Model" (2023) [https://arxiv.org/abs/2305.18290].',
+    source_url: 'https://arxiv.org/abs/2305.18290',
+  },
+  {
+    id: 'rec-paper-3',
+    title: 'SWE-agent: Agent-Computer Interfaces',
+    full_title: 'SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering',
+    icon_kind: 'code',
+    year: 2024,
+    venue: 'NeurIPS',
+    citations: 620,
+    topic_tag: 'Interactive Agents',
+    prompt:
+      'Reproduce the core method, experiments, and key evaluation results of "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering" (2024) [https://arxiv.org/abs/2405.15793].',
+    source_url: 'https://arxiv.org/abs/2405.15793',
+  },
+  {
+    id: 'rec-paper-4',
+    title: 'Data Formulator: AI-Powered Visualization',
+    full_title: 'Data Formulator: AI-Powered Concept-Driven Visualization Authoring',
+    icon_kind: 'experiment',
+    year: 2024,
+    venue: 'IEEE TVCG',
+    citations: 145,
+    topic_tag: 'Visual Analytics',
+    prompt:
+      'Reproduce the core method, experiments, and key evaluation results of "Data Formulator: AI-Powered Concept-Driven Visualization Authoring" (2024) [https://arxiv.org/abs/2309.10099].',
+    source_url: 'https://arxiv.org/abs/2309.10099',
+  },
+];
+
+const DATA_PLACEHOLDER_TEXT = 'Describe your question, or pick a chart view below...';
+const REPRODUCE_PLACEHOLDER_TEXT = 'Paste a paper title, link, or pick a hot paper below...';
 
 export const LandingHero: React.FC<LandingHeroProps> = ({
+  mode,
+  onModeChange,
   workspaces,
   submitting,
   llmSettings,
   trendingCharts,
   trendingLoading,
+  recommendedPapers,
+  papersLoading,
   onLLMSettingsChange,
   onSubmitPrompt,
   onSelectWorkspace,
 }) => {
-  const [prompt, setPrompt] = useState('');
+  const [promptsByMode, setPromptsByMode] = useState<Record<WorkspaceMode, string>>({
+    data: '',
+    reproduce: '',
+  });
   const [freshWorkspaces, setFreshWorkspaces] = useState<Workspace[]>(workspaces);
   const [activePreviewId, setActivePreviewId] = useState<string | null>(null);
   const [apiModalOpen, setApiModalOpen] = useState(false);
+
+  const prompt = promptsByMode[mode];
+  const setPrompt = (val: string) => {
+    setPromptsByMode((prev) => ({ ...prev, [mode]: val }));
+  };
 
   const att = useAttachmentController(submitting);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const badgeBtnRef = useRef<HTMLButtonElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const modeSwitchBtnRef = useRef<HTMLButtonElement>(null);
   const closePreviewTimerRef = useRef<number | null>(null);
   const basePreviewId = useId();
 
@@ -171,6 +263,39 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
       if (headingRef.current) {
         headingRef.current.style.viewTransitionName = '';
       }
+    });
+  };
+
+  const handleSwitchMode = (nextMode: WorkspaceMode) => {
+    if (nextMode === mode) return;
+    setActivePreviewId(null);
+
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const docWithVT = document as Document & {
+      startViewTransition?: (cb: () => void) => { finished: Promise<void> };
+    };
+    const titleEl = headingRef.current;
+
+    if (reducedMotion || !docWithVT.startViewTransition || !titleEl) {
+      onModeChange(nextMode);
+      requestAnimationFrame(() => modeSwitchBtnRef.current?.focus({ preventScroll: true }));
+      return;
+    }
+
+    titleEl.style.viewTransitionName = 'landing-hero-heading';
+    const transition = docWithVT.startViewTransition(() => {
+      flushSync(() => {
+        onModeChange(nextMode);
+      });
+    });
+
+    transition.finished.finally(() => {
+      if (headingRef.current) {
+        headingRef.current.style.viewTransitionName = '';
+      }
+      modeSwitchBtnRef.current?.focus({ preventScroll: true });
     });
   };
 
@@ -248,6 +373,11 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
     }
   };
 
+  const handleSelectPaperPrompt = (paperPrompt: string) => {
+    setPrompt(paperPrompt);
+    requestAnimationFrame(() => promptTextareaRef.current?.focus());
+  };
+
   const handleQuickSelection = async (patch: {
     model?: string;
     thinking_effort?: ThinkingEffort;
@@ -269,11 +399,27 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || submitting || att.uploading) return;
-    await onSubmitPrompt(prompt.trim(), att.attached?.upload_id ?? null);
+    if (submitting || att.uploading) return;
+    const trimmed = prompt.trim();
+    const canAttachSubmit = mode === 'reproduce' && Boolean(att.attached);
+    if (!trimmed && !canAttachSubmit) return;
+    const effectivePrompt =
+      trimmed ||
+      `Reproduce the attached paper (${att.attached?.label || 'uploaded PDF'}) and verify its core claims through multi-round experiments.`;
+    await onSubmitPrompt(effectivePrompt, att.attached?.upload_id ?? null, mode);
   };
 
-  const displayedWorkspaces = freshWorkspaces.slice(0, 12);
+  const placeholderText =
+    mode === 'reproduce' ? REPRODUCE_PLACEHOLDER_TEXT : DATA_PLACEHOLDER_TEXT;
+
+  const filteredWorkspaces = freshWorkspaces.filter(
+    (ws) => (ws.workspace_type ?? 'data') === mode
+  );
+  const displayedWorkspaces = filteredWorkspaces.slice(0, 12);
+
+  const paperItems = recommendedPapers?.items?.length
+    ? recommendedPapers.items
+    : EMERGENCY_PAPER_ITEMS;
 
   return (
     <main className="landing-shell">
@@ -312,8 +458,36 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
             click me to complete API config!
           </button>
         ) : null}
-        <h1 ref={headingRef} className="landing-title">
-          Ask Any Questions of Data
+        <h1 ref={headingRef} tabIndex={-1} className="landing-title">
+          {mode === 'data' ? (
+            <>
+              Ask Any Questions of{' '}
+              <button
+                ref={modeSwitchBtnRef}
+                type="button"
+                className="landing-title-switch"
+                data-testid="landing-mode-switch"
+                aria-label="Data — Click to switch to Paper Reproduction"
+                onClick={() => handleSwitchMode('reproduce')}
+              >
+                Data
+              </button>
+            </>
+          ) : (
+            <>
+              Upload Papers to{' '}
+              <button
+                ref={modeSwitchBtnRef}
+                type="button"
+                className="landing-title-switch"
+                data-testid="landing-mode-switch"
+                aria-label="Reproduce — Click to switch to Data Questions"
+                onClick={() => handleSwitchMode('data')}
+              >
+                Reproduce
+              </button>
+            </>
+          )}
         </h1>
       </header>
 
@@ -321,13 +495,13 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
         <form className="prompt-form" onSubmit={handleSubmit}>
           <div className="prompt-sizer">
             <div className="prompt-mirror" aria-hidden="true">
-              {(prompt || PLACEHOLDER_TEXT) + '\n'}
+              {(prompt || placeholderText) + '\n'}
             </div>
             <textarea
               ref={promptTextareaRef}
               className="prompt-textarea"
               aria-label="Research prompt"
-              placeholder={PLACEHOLDER_TEXT}
+              placeholder={placeholderText}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               disabled={submitting}
@@ -355,7 +529,11 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
               <button
                 type="submit"
                 className="btn-primary landing-submit-btn"
-                disabled={submitting || att.uploading || !prompt.trim()}
+                disabled={
+                  submitting ||
+                  att.uploading ||
+                  (!prompt.trim() && !(mode === 'reproduce' && Boolean(att.attached)))
+                }
               >
                 {submitting ? 'Running...' : 'Run'}
                 <ArrowRight size={15} />
@@ -367,15 +545,17 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
 
       <section className="landing-hero-bottom">
         <div className="examples-grid">
-          {trendingLoading && !trendingCharts
-            ? [0, 1, 2, 3].map((slot) => (
+          {mode === 'data' ? (
+            trendingLoading && !trendingCharts ? (
+              [0, 1, 2, 3].map((slot) => (
                 <div
                   key={slot}
                   className="example-chip-skeleton"
                   aria-hidden="true"
                 />
               ))
-            : (trendingCharts?.items?.length ? trendingCharts.items : EMERGENCY_CHART_ITEMS).map(
+            ) : (
+              (trendingCharts?.items?.length ? trendingCharts.items : EMERGENCY_CHART_ITEMS).map(
                 (ex) => {
                   const previewId = `${basePreviewId}-${ex.id}`;
                   const isOpen = activePreviewId === ex.id;
@@ -410,7 +590,38 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
                     </div>
                   );
                 }
-              )}
+              )
+            )
+          ) : papersLoading && !recommendedPapers ? (
+            [0, 1, 2, 3].map((slot) => (
+              <div
+                key={slot}
+                className="example-chip-skeleton"
+                aria-hidden="true"
+              />
+            ))
+          ) : (
+            paperItems.map((paper) => (
+              <div key={paper.id} className="example-chip-wrap">
+                <button
+                  type="button"
+                  className={`example-chip ${prompt.trim() === paper.prompt ? 'is-selected' : ''}`}
+                  title={`${paper.full_title}${paper.year ? ` (${paper.year})` : ''}${paper.venue ? ` · ${paper.venue}` : ''}`}
+                  onClick={() => handleSelectPaperPrompt(paper.prompt)}
+                >
+                  <span className="example-chip-main">
+                    {PAPER_VIEW_ICONS[paper.icon_kind] ?? PAPER_VIEW_ICONS.paper}
+                    <span className="example-chip-title">{paper.title}</span>
+                  </span>
+                  {paper.year ? (
+                    <span className="example-chip-year" aria-hidden="true">
+                      {paper.year}
+                    </span>
+                  ) : null}
+                </button>
+              </div>
+            ))
+          )}
         </div>
 
         {displayedWorkspaces.length > 0 && (
